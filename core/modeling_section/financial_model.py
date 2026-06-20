@@ -1,7 +1,9 @@
 import numpy as np
 import pandas as pd
 import numpy_financial as npf
-
+import matplotlib.pyplot as plt
+import os
+import json
 
 class FinancialModel:
 
@@ -267,7 +269,7 @@ if __name__ == "__main__":
     )
 
 
-    print("\n===== Financial Results =====\n")
+    print("Financial Results")
 
     results = model.calculate_financial_metrics()
 
@@ -279,3 +281,10 @@ if __name__ == "__main__":
 
 
     model.export_cashflow_excel()
+    
+#Load financial config for easier modify
+def load_financial_config(path):
+    
+    #Load financial input parameters.
+    with open(path, "r") as f:
+        return json.load(f)
