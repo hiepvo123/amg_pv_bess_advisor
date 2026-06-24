@@ -15,8 +15,13 @@ class FinancialModel:
         discount_rate,
         project_life,
         annual_pv_energy=None,
-        annual_bess_energy=None
+        annual_bess_energy=None,
+        bess_capex=None,
+        battery_replacement_cost=0,
+        battery_replacement_year=10,
+        price_growth_rate=0.0
     ):
+        
         """
         Parameters
         ----------
@@ -50,8 +55,35 @@ class FinancialModel:
 
         self.pv_energy = annual_pv_energy
         self.bess_energy = annual_bess_energy
+        self.bess_capex = (
+            bess_capex if bess_capex is not None
+            else capex
+        )
 
+        self.battery_replacement_cost = (
+            battery_replacement_cost
+        )
 
+        self.battery_replacement_year = (
+            battery_replacement_year
+        )
+        self.price_growth_rate = (
+        price_growth_rate
+        )
+        
+        
+    def get_revenue_for_year(
+        self,
+        year
+        ):
+        return (
+            self.revenue *
+            (
+                1 +
+                self.price_growth_rate
+            ) ** (year - 1)
+        )
+        
 #Cash Flow
     def calculate_cash_flow(self):
         """
@@ -62,11 +94,21 @@ class FinancialModel:
 
         cashflows = [-self.capex]
 
-        for _ in range(self.life):
-            cashflows.append(
-                self.revenue - self.opex
+        for year in range(1, self.life + 1):
+
+            annual_cf = (
+                self.get_revenue_for_year(year) - self.opex
             )
 
+            if year == self.battery_replacement_year:
+
+                annual_cf -= (
+                    self.battery_replacement_cost
+                )
+
+            cashflows.append(
+                annual_cf
+            )
         cumulative = np.cumsum(cashflows)
 
         table = pd.DataFrame({
@@ -76,25 +118,20 @@ class FinancialModel:
         })
 
         return table
-
-
-#NPV
+    #NPV
     def calculate_npv(self):
-        """
-        Net Present Value.
-        """
 
-        cashflows = [-self.capex]
+        annual_cf = self.revenue - self.opex
 
-        for _ in range(self.life):
-            cashflows.append(
-                self.revenue - self.opex
-            )
+        npv = -self.capex
 
-        return npf.npv(
-            self.rate,
-            cashflows
-        )
+        for year in range(1, self.life + 1):
+                npv += (
+                    annual_cf /
+                    ((1 + self.rate) ** year)
+                )
+
+        return npv
 
 
 #IRR
@@ -115,27 +152,35 @@ class FinancialModel:
 
 #Paypack Period
     def calculate_payback(self):
-        """
-        Return payback year.
-        """
 
         cash_table = self.calculate_cash_flow()
 
-        for _, row in cash_table.iterrows():
+        for i in range(1, len(cash_table)):
 
-            if row["Cumulative Cash Flow (VND)"] >= 0:
-                return int(row["Year"])
+            prev_cf = cash_table.iloc[i-1]["Cumulative Cash Flow (VND)"]
+            curr_cf = cash_table.iloc[i]["Cumulative Cash Flow (VND)"]
+
+            if curr_cf >= 0:
+
+                fraction = (
+                    abs(prev_cf) /
+                    (curr_cf - prev_cf)
+                )
+
+                return (
+                    (i - 1) + fraction
+                )
 
         return None
 
 
-#LCORE
+#LCOE
     def calculate_lcoe(self):
         """
         Levelized Cost of Energy.
         Unit: VND/kWh
         """
-
+        degradation = 0.005
         if self.pv_energy is None:
             return None
 
@@ -174,11 +219,9 @@ class FinancialModel:
         if self.bess_energy is None:
             return None
 
-
-        bess_cost = self.capex
+        bess_cost = self.bess_capex
 
         discharged_energy = 0
-
 
         for year in range(1, self.life + 1):
 
@@ -186,18 +229,27 @@ class FinancialModel:
                 1 + self.rate
             ) ** year
 
-
             bess_cost += (
                 self.opex / discount
             )
 
+            # Battery replacement
+            if year == self.battery_replacement_year:
+
+                bess_cost += (
+                    self.battery_replacement_cost /
+                    discount
+                )
 
             discharged_energy += (
-                self.bess_energy / discount
+                self.bess_energy /
+                discount
             )
 
-
-        return bess_cost / discharged_energy
+        return (
+            bess_cost /
+            discharged_energy
+        )
 
 
 #Summary
@@ -254,33 +306,76 @@ class FinancialModel:
             f"Cash flow exported to {filename}"
         )
 
+#Export Chart Flow
+    def plot_cumulative_cashflow(
+        self,
+        filename="outputs/figures/cumulative_cashflow.png"
+    ):
+        """
+        Plot cumulative cash flow over project lifetime.
+        """
+        table = self.calculate_cash_flow()
 
-#Test
-if __name__ == "__main__":
-
-    model = FinancialModel(
-        capex=43e9,
-        opex=500e6,
-        annual_revenue=9e9,
-        discount_rate=0.10,
-        project_life=20,
-        annual_pv_energy=50e6,
-        annual_bess_energy=5e6
-    )
-
-
-    print("Financial Results")
-
-    results = model.calculate_financial_metrics()
-
-
-    for key, value in results.items():
-        print(
-            f"{key}: {value:,.2f}"
+        os.makedirs(
+            os.path.dirname(filename),
+            exist_ok=True
         )
 
+        plt.figure(figsize=(10, 6))
 
-    model.export_cashflow_excel()
+        plt.plot(
+            table["Year"],
+            table["Cumulative Cash Flow (VND)"] / 1e9,
+            marker="o"
+        )
+
+        plt.axhline(
+            y=0,
+            linestyle="--"
+        )
+
+        payback = self.calculate_payback()
+
+        if payback is not None:
+
+            plt.axvline(
+                x=payback,
+                linestyle=":"
+            )
+
+            plt.text(
+                payback,
+                0,
+                f"Payback ≈ {payback:.2f} yrs"
+            )
+
+        plt.title(
+            "Cumulative Cash Flow"
+        )
+
+        plt.xlabel(
+            "Year"
+        )
+
+        plt.ylabel(
+            "Cumulative Cash Flow (Billion VND)"
+        )
+
+        plt.grid(True)
+
+        plt.tight_layout()
+
+        plt.savefig(
+            filename,
+            dpi=300,
+            bbox_inches="tight"
+        )
+
+        plt.close()
+
+        print(
+            f"Cumulative cash flow chart saved to {filename}"
+        )
     
 #Load financial config for easier modify
 def load_financial_config(path):
