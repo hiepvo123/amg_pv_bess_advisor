@@ -4,6 +4,7 @@ import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
 export class WindTurbine {
     mesh;
     blades;
+    meshes = [];
 
     constructor() {
         this.mesh = new THREE.Group();
@@ -19,6 +20,7 @@ export class WindTurbine {
               //const helper = new VertexNormalsHelper(child, 0.5, 0xff0000 );
               //child.add(helper);
               child.castShadow = true;
+              this.meshes.push(child);
               //child.receiveShadow = true; 
             }
         });

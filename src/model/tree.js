@@ -3,6 +3,7 @@ import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
 export class Tree {
     mesh;
+    meshes = [];
 
     constructor() {
         this.mesh = new THREE.Group();
@@ -26,6 +27,8 @@ export class Tree {
             if (child.isMesh) {
                 child.castShadow = true;
                 child.receiveShadow = true;
+                this.meshes.push(child);
+
 
                 if (child.material.map) {
                     child.material.transparent = true;
@@ -36,7 +39,7 @@ export class Tree {
             }
         });
 
-        object.scale.set(0.75, 0.75, 0.75);
+        object.scale.set(0.5, 0.5, 0.5);
         object.position.set(0, 0, 2);
 
         this.mesh.add(object);
