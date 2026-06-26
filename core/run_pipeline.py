@@ -1,6 +1,10 @@
 """
 Main pipeline orchestrator.
 """
+from core.modeling_section.financial_model import (
+    FinancialModel,
+    load_financial_config
+)
 import argparse
 import sys
 from pathlib import Path
