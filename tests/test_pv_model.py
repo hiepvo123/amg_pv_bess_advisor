@@ -5,9 +5,10 @@ Unit tests for core/pv_model.py - PV power simulation model.
 Reference values do NOT depend on any external file/datasheet:
     - pv_capacity = 47.5 MW - actual installed capacity of the DHD plant
       (known project fact).
-    - temp_coeff = -0.0034 (-0.34 %/degC) - typical crystalline silicon
-      panel value (-0.30% to -0.45%/degC range), cross-checked against the
-      project's own real data - see test_temp_coeff_sign_matches_real_data().
+    - temp_coeff = -0.00410 (-0.41 %/degC) - confirmed panel model:
+      LONGi Solar LR6-72HV-340M (datasheet provided to team by AMG).
+      Cross-checked against the project's real data - see
+      test_temp_coeff_sign_matches_real_data().
 """
 
 import numpy as np
@@ -24,7 +25,7 @@ from core.pv_model import (
 
 # Reference test values - see module docstring for sourcing
 REF_PV_CAPACITY = 47.5      # MW, actual DHD plant installed capacity
-REF_TEMP_COEFF = -0.0034    # -0.340 %/degC -> decimal (typical value)
+REF_TEMP_COEFF = -0.00410   # -0.410 %/degC - LONGi Solar LR6-72HV-340M
 REF_LOSS_FACTOR = 0.97
 
 
@@ -173,7 +174,7 @@ def test_real_dhd_dataset_smoke_test():
     assert result["pv_power_calc"].max() <= 47.5 * 1.10
 
 
-# Tests: calculate_pv_surplus (spec section 8 - "PV surplus vs load") 
+# Tests: calculate_pv_surplus 
 
 def test_pv_surplus_when_pv_exceeds_load():
     pv_power = [10.0, 20.0, 5.0]
@@ -199,7 +200,7 @@ def test_pv_surplus_mismatched_length_raises():
         calculate_pv_surplus([1, 2, 3], [1, 2])
 
 
-# Tests: get_pv_energy_table (spec section 15 - "PV energy table") 
+# Tests: get_pv_energy_table 
 
 def test_get_pv_energy_table_daily():
     """4 x 30-min cycles at 1 MW on the same day = 2 MWh for that day."""
@@ -225,8 +226,8 @@ def test_get_pv_energy_table_monthly_groups_correctly():
     })
     energy_table = get_pv_energy_table(df, freq="M")
     assert len(energy_table) == 2
-    assert energy_table["pv_energy"].iloc[0] == pytest.approx(2.0)  # March: 2*0.5*2
-    assert energy_table["pv_energy"].iloc[1] == pytest.approx(4.0)  # April: 4*0.5*2
+    assert energy_table["pv_energy"].iloc[0] == pytest.approx(2.0)  
+    assert energy_table["pv_energy"].iloc[1] == pytest.approx(4.0)  
 
 
 def test_get_pv_energy_table_invalid_freq_raises():
@@ -260,7 +261,7 @@ def test_real_dhd_energy_table_smoke_test():
         assert (energy_table["pv_energy"] >= 0).all()
 
 
-# Cross-check default temp_coeff against the project's own real data 
+# Cross-check default temp_coeff against the project's own real data
 
 def test_temp_coeff_sign_matches_real_data():
     """
@@ -289,6 +290,5 @@ def test_temp_coeff_sign_matches_real_data():
 
     slope = np.polyfit(daytime["temp_pv_c"], daytime["p_norm"], 1)[0]
 
-    # Only check the sign (negative - higher temp means lower power), not
-    # an exact value, since real-world data is too noisy (see docstring).
+    # Only check the sign (negative - higher temp means lower power), not an exact value.
     assert slope < 0, "Real data must show temperature-up -> power-down trend"

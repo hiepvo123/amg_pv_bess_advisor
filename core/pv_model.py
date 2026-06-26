@@ -11,19 +11,18 @@ Deterministic physics formula (v1 does not require AI/ML forecasting):
     G(t)        : irradiance on the panel surface (GHI/POA), W/m^2
     T(t)        : panel or ambient temperature, deg C
     gamma       : temperature coefficient of power (temp_coeff), 1/degC
-                  (decimal, NOT percent - e.g. -0.0034 = -0.34 %/degC)
+                  (decimal, NOT percent)
     loss_factor : system derate factor (wiring, soiling, mismatch...), (0, 1]
     G_ref, T_ref: STC reference conditions - default 1000 W/m^2, 25 degC
 
-Default test values (tests/test_pv_model.py):
+Default test values (see tests/test_pv_model.py):
     - pv_capacity = 47.5 MW - actual installed capacity of the DHD plant
       (known project fact, no external datasheet needed).
-    - temp_coeff = -0.0034 (-0.34 %/degC) - typical value for crystalline
-      silicon panels (-0.30% to -0.45%/degC range), not tied to a specific
-      brand. Cross-checked via linear regression on the project's own real
-      data (outputs/processed/pv_30min_clean.csv): same sign, same order
-      of magnitude, but R^2 ~0.02 (too noisy for a precise reference -
-      real data includes cloud noise, AGC curtailment, grid dispatch).
+    - temp_coeff = -0.00410 (-0.41 %/degC) - from the confirmed panel model:
+      LONGi Solar LR6-72HV-340M (datasheet source: provided to team by AMG).
+      Note: if the old DHD plant uses a different panel and no datasheet is
+      available, use -0.0034 (-0.34 %/degC) as a temporary assumption and
+      document it clearly (per teacher's guidance).
 """
 from pathlib import Path
 from typing import Union, Sequence
@@ -73,6 +72,7 @@ def calculate_pv_power(
     temp_coeff : float
         Temperature coefficient of power (gamma), 1/degC decimal. Typical
         crystalline silicon panel: -0.003 to -0.0045.
+        Confirmed model LONGi Solar LR6-72HV-340M: -0.00410 (-0.41 %/degC).
     loss_factor : float, default 1.0
         System derate factor, (0, 1].
     ref_ghi_wm2 : float, default 1000.0
@@ -81,26 +81,26 @@ def calculate_pv_power(
         STC reference temperature, deg C.
 
     Returns
-
+    -------
     np.ndarray
         PV power, same unit as pv_capacity, same length as `ghi`.
         Always >= 0 (GHI=0 must give P=0 regardless of temperature).
 
     Raises
-  
+    ------
     ValueError
         If pv_capacity <= 0, loss_factor not in (0, 1], or ghi/temperature
         lengths mismatch and cannot broadcast.
 
     Examples
-    
+    --------
     >>> calculate_pv_power(ghi=0, temperature=25, pv_capacity=47.5,
-    ...                     temp_coeff=-0.0034, loss_factor=0.95)
+    ...                     temp_coeff=-0.00410, loss_factor=0.95)
     array([0.])
 
     >>> # At STC with no system loss, output must equal rated capacity
     >>> calculate_pv_power(ghi=1000, temperature=25, pv_capacity=47.5,
-    ...                     temp_coeff=-0.0034, loss_factor=1.0)
+    ...                     temp_coeff=-0.00410, loss_factor=1.0)
     array([47.5])
     """
     if pv_capacity <= 0:
@@ -144,7 +144,7 @@ def calculate_pv_energy(power: ArrayLike, interval_minutes: float = 30.0) -> flo
         Sampling interval, minutes. DHD operational reports use 30-min cycles.
 
     Returns
-    
+    -------
     float
         Total energy (e.g. MWh if power is in MW).
     """
@@ -179,7 +179,7 @@ def get_pv_power_table(
         Temperature column name in `df`.
 
     Returns
-
+    -------
     pd.DataFrame
         Relevant columns plus a new `pv_power_calc` column.
     """
@@ -259,13 +259,13 @@ def calculate_pv_surplus(pv_power: ArrayLike, load: ArrayLike) -> tuple[np.ndarr
         Load power, same unit and length as pv_power.
 
     Returns
-    
+    -------
     (surplus, deficit) : tuple[np.ndarray, np.ndarray]
         surplus : PV - load, clipped to 0 - used for BESS charge rule.
         deficit : load - PV, clipped to 0 - used for BESS discharge rule.
 
     Raises
-
+    ------
     ValueError
         If pv_power and load lengths mismatch and cannot broadcast.
     """
@@ -287,7 +287,7 @@ def calculate_pv_surplus(pv_power: ArrayLike, load: ArrayLike) -> tuple[np.ndarr
     return surplus, deficit
 
 
-# PV energy table by day/month/year (spec sections 8 + 15) 
+# PV energy table by day/month/year 
 
 _FREQ_LABELS = {"D": "day", "M": "month", "Y": "year"}
 # pandas >= 2.2 renamed resample aliases 'M' -> 'ME' and 'Y' -> 'YE';
@@ -321,12 +321,12 @@ def get_pv_energy_table(
         Sampling interval between power readings, minutes.
 
     Returns
-    -
+    -------
     pd.DataFrame
         2 columns: `period` and `pv_energy` (energy, e.g. MWh).
 
     Raises
-    
+    ------
     ValueError
         If a required column is missing or `freq` is invalid.
     """
