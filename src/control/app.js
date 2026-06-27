@@ -114,68 +114,11 @@ export class App {
         tree.addToScene()
 
         
-        const windTurbine = new WindTurbine();
+        const windTurbine = new WindTurbine(this.scene);
 
         await windTurbine.load();
-        const instancedTurbines = [];
-        this.bladeInstances =[];
-
-        windTurbine.meshes.forEach((mesh) => {
-            //console.log(
-            //    mesh.name,
-            //    mesh.position,
-            //    mesh.rotation
-            //);
-
-            const im = new THREE.InstancedMesh(
-                mesh.geometry,
-                mesh.material,
-                10
-            );
-
-            im.castShadow = true;
-            //im.receiveShadow = true;
-
-            if (mesh.name === 'WindTurbine_Blades001_Material002_0') {
-                this.bladeInstances.push(im) ;
-            } else {
-                instancedTurbines.push(im);
-            }
-
-            this.scene.add(im);
-
-        });
-
-        const bodyTurbineMatrix = new THREE.Object3D();
-        this.bladeInstancesMatrix = new THREE.Object3D();
-        bodyTurbineMatrix.scale.set(2,2,2);
-        this.bladeInstancesMatrix.scale.set(2,2,2);
-
-        for (let i = 0; i < 5; i++) {
-            bodyTurbineMatrix.position.set(5, 8.2, 5 + 3*i);
-            bodyTurbineMatrix.rotation.x = -Math.PI / 2;
-            bodyTurbineMatrix.updateMatrix();
-
-            instancedTurbines.forEach((im) => {
-                im.setMatrixAt(i, bodyTurbineMatrix.matrix);
-                im.instanceMatrix.needsUpdate = true
-            });
-
-            //bladeInstances.setMatrixAt(i, bladeDummy.matrix);
-        }
-
-        for (let i = 5; i < 10; i++) {
-            bodyTurbineMatrix.position.set(8, 8.2, 5 + 3*(9-i));
-            bodyTurbineMatrix.rotation.x = -Math.PI / 2;
-            bodyTurbineMatrix.updateMatrix();
-
-            instancedTurbines.forEach((im) => {
-                im.setMatrixAt(i, bodyTurbineMatrix.matrix);
-                im.instanceMatrix.needsUpdate = true
-            });
-
-            //bladeInstances.setMatrixAt(i, bladeDummy.matrix);
-        }
+        windTurbine.addToScene()
+        
 
 
 
@@ -218,33 +161,7 @@ export class App {
         window.addEventListener('resize', resize );
 
 
-        const update_Blades = () => {
-            this.bladeInstancesMatrix.rotation.y +=0.01;
-            console.log(this.bladeInstances.length);
 
-            for(let i = 0; i < 5; i++){
-
-                this.bladeInstancesMatrix.position.set(5 , 8.2, 5 + 3*i);
-                this.bladeInstancesMatrix.rotation.x = -Math.PI / 2;
-                this.bladeInstancesMatrix.updateMatrix();
-                this.bladeInstances.forEach((im) => {
-                    im.setMatrixAt(i, this.bladeInstancesMatrix.matrix);
-                    im.instanceMatrix.needsUpdate = true;
-                });
-            }
-
-            
-            for(let i = 5; i < 10; i++){
-
-                this.bladeInstancesMatrix.position.set(8 , 8.2, 5 + 3*(9-i));
-                this.bladeInstancesMatrix.rotation.x = -Math.PI / 2;
-                this.bladeInstancesMatrix.updateMatrix();
-                this.bladeInstances.forEach((im) => {
-                    im.setMatrixAt(i, this.bladeInstancesMatrix.matrix);
-                    im.instanceMatrix.needsUpdate = true;
-                });
-            }
-        }
         const update_SolarPanels = () => {
             //this.solarPanelInstancesMatrix.rotation.y +=0.1
             if (this.sun.position.y > 0) {
@@ -276,7 +193,8 @@ export class App {
             this.timeOfDay = (this.timeOfDay + 0.00015) % 1
             update_light();
 
-            update_Blades();
+            //update_Blades();
+            windTurbine.updateBlades();
             update_SolarPanels();
 
 
