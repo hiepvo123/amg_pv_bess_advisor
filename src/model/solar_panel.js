@@ -5,11 +5,12 @@ export class SolarPanel {
     panel;
     meshes = [];
     solarPanelInstances = [];
-    solarBaseInstances = [];
+    #solarBaseInstances = [];
     solarPanelCount = 36;
     solarPanelInstancesMatrix;
     solarBaseMatrix;
     scene;
+    panelPositions = [];
 
     constructor(scene) {
         this.scene = scene;
@@ -66,6 +67,13 @@ export class SolarPanel {
             matrix: panel.matrix.clone(),
             type: 'panel'
         });
+        for (let x = 5; x <= 10; x++) {
+            for (let z = 0; z <= 5; z++) {
+                this.panelPositions.push(
+                    new THREE.Vector3(x * 2.5 - 15, 1, -z * 3)
+                );
+            }
+        }
 
 
         
@@ -86,7 +94,7 @@ export class SolarPanel {
             if (type === 'panel'){
                 this.solarPanelInstances.push(im);
             } else{
-                this.solarBaseInstances.push(im);
+                this.#solarBaseInstances.push(im);
             }
             this.scene.add(im);
         });
@@ -95,44 +103,96 @@ export class SolarPanel {
         this.solarPanelInstancesMatrix = new THREE.Object3D();
         this.solarBaseMatrix = new THREE.Object3D();
         
-        let index = 0;
+
+    }
+
+    setBasePosition(index, position){
+;
+
+        const dummy = new THREE.Object3D();
+        dummy.position.copy(position);
+        dummy.updateMatrix();
+
+        this.#solarBaseInstances.forEach((im) => {
+            const finalMatrix = dummy.matrix.clone();
+            finalMatrix.multiply(im.userData.localMatrix);
+
+            im.setMatrixAt(index, finalMatrix);
+        });
+    }
+
+    setPanelPosition(index, position) {
+
+               
+        const dummy = new THREE.Object3D();
+        dummy.position.copy(position);
+        dummy.updateMatrix();
         
-        for (let x = 5; x <= 10; x++) {
-            for (let z = 0; z <= 5; z++) {
-                this.solarBaseMatrix.position.set(x*2.5 -15, -1, -z*3);
-                this.solarBaseMatrix.updateMatrix();
-        
-                this.solarBaseInstances.forEach((im) => {
-                    const finalMatrix = this.solarBaseMatrix.matrix.clone();
-                    finalMatrix.multiply(im.userData.localMatrix);
-        
-                    im.setMatrixAt(index, finalMatrix);
-                    im.instanceMatrix.needsUpdate = true;
-                });
-             
-                index++; 
-            }
-                
+        this.solarPanelInstances.forEach((im) => {
+            const finalMatrix = dummy.matrix.clone();
+            finalMatrix.multiply(im.userData.localMatrix);
+
+            im.setMatrixAt(index, finalMatrix);
+        });
+    }
+
+    setPanelRotation(rotation) {
+        const dummy = new THREE.Object3D();
+
+        for (let i = 0; i < this.solarPanelCount; i++) {
+            const matrix = new THREE.Matrix4();
+
+            
+            dummy.rotation.copy(rotation);
+            dummy.updateMatrix();
+
+            this.solarPanelInstances.forEach((im) => {
+                const finalMatrix = dummy.matrix.clone();
+                finalMatrix.multiply(im.userData.localMatrix);
+
+                im.setMatrixAt(i, finalMatrix);
+                im.instanceMatrix.needsUpdate = true;
+            });
         }
     }
 
-    setPos(index, position){
-        this.solarBaseMatrix.position.set(position.x, position.y, position.z);
-        this.solarBaseMatrix.updateMatrix();
-        const imBase = this.solarBaseInstances.at(index);
-        const finalBaseMatrix = this.solarBaseMatrix.matrix.clone();
-        finalBaseMatrix.multiply(im.userData.localMatrix);
+    setBases() {
+        const dummy = new THREE.Object3D();
 
-        im.setMatrixAt(index, finalBaseMatrix);
-        
-        this.solarPanelInstancesMatrix.position.set(position.x, position.y, position.z);
-        this.solarPanelInstancesMatrix.updateMatrix();
-        const imPanel = this.solarPanelInstances.at(index);
-        const finalPanelMatrix = this.solarPanelInstancesMatrix.matrix.clone();
-        finalPanelMatrix.multiply(im.userData.localMatrix);
+        for (let i = 0; i < this.solarPanelCount; i++) {
+            dummy.position.copy(this.panelPositions[i]);
+            dummy.position.y -=2;
 
-        im.setMatrixAt(index, finalPanelMatrix);
-        
+            dummy.updateMatrix();
+
+            this.#solarBaseInstances.forEach((im) => {
+                const finalMatrix = dummy.matrix.clone();
+                finalMatrix.multiply(im.userData.localMatrix);
+
+                im.setMatrixAt(i, finalMatrix);
+                im.instanceMatrix.needsUpdate = true;
+            });
+        }
+    }
+
+    lookAtPanels(target) {
+        const dummy = new THREE.Object3D();
+
+        for (let i = 0; i < this.solarPanelCount; i++) {
+            dummy.position.copy(this.panelPositions[i]);
+            dummy.lookAt(target);
+            dummy.updateMatrix();
+
+            this.solarPanelInstances.forEach((im) => {
+                const finalMatrix = dummy.matrix.clone();
+                finalMatrix.multiply(im.userData.localMatrix);
+
+                im.setMatrixAt(i, finalMatrix);
+                im.instanceMatrix.needsUpdate = true;
+            });
+        }
+
+
     }
 
     getObject() {

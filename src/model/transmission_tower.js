@@ -87,21 +87,18 @@ export class TransmissionTower {
     }
 
     setTowerPos(index, position) {
-        //console.log(position);
 
-        this.#towerMatrix.position.set(position.x, position.y, position.z);
 
-        //console.log(this.#towerMatrix.position);
-        this.#towerMatrix.updateMatrix();
+        const dummy = new THREE.Object3D();
+        dummy.position.copy(position);
+        dummy.updateMatrix();
 
-        const im = this.#towerInstances.at(index);
-        const finalMatrix = this.#towerMatrix.matrix.clone();
-        finalMatrix.multiply(im.userData.localMatrix);
+        this.#towerInstances.forEach((im) => {
+            const finalMatrix = dummy.matrix.clone();
+            finalMatrix.multiply(im.userData.localMatrix);
 
-        //console.log(finalMatrix);
-
-        im.setMatrixAt(index, finalMatrix);
-        im.instanceMatrix.needsUpdate = true;
+            im.setMatrixAt(index, finalMatrix);
+        });
     }
 
     getTowerMatrix(){

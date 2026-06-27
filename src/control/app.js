@@ -10,6 +10,8 @@ import { VertexNormalsHelper } from 'three/addons/helpers/VertexNormalsHelper.js
 import { TransmissionTower } from '../model/transmission_tower.js';
 import { WindTurbine } from '../model/wind_turbine.js';
 import { PowerPredictions } from '../model/power_predictions.js';
+import { SkyMesh } from 'three/addons/objects/SkyMesh.js';
+import { pass, rangeFogFactor,color, fog, positionWorld, triNoise3D, normalWorld, uniform, densityFogFactor } from 'three/tsl';
 
 
 
@@ -18,6 +20,7 @@ export class App {
     renderer;
     camera;
     controls;
+    renderPipeline;
 
     //Lighting params
     timeOfDay;
@@ -62,6 +65,7 @@ export class App {
 
     async createAssets() {
         //TODO: REFACTOR THIS MESS
+        
         //assets
         this.controls = new OrbitControls(this.camera, this.renderer.domElement);
         this.controls.enableDamping = true;
@@ -86,15 +90,18 @@ export class App {
         plane.receiveShadow = true;
         this.scene.add( plane );
 
-        this.solarPanel = new SolarPanel(this.scene);
-        this.solarPanelInstances = [];
+        //this.solarPanel = new SolarPanel(this.scene);
+        //this.solarPanelInstances = [];
         const solarPanelCount = 36;
         const solarBaseInstance = []
-        this.solarPanel.addToScene();
+        //this.solarPanel.addToScene();
 
         
 
         let solar_Panel = new SolarPanel(this.scene);
+        solar_Panel.addToScene(this.scene);
+
+        solar_Panel.setBases();
 
         
         
@@ -103,8 +110,8 @@ export class App {
         await transmissionTower.load();
 
         await transmissionTower.addToScene();
-        let towerPos = new THREE.Vector3(-7,0,0);
-        transmissionTower.setTowerPos(0,towerPos);
+        let towerPos = new THREE.Vector3(-13,0,0);
+        transmissionTower.setTowerPos(1,towerPos);
         
 
         
@@ -236,8 +243,7 @@ export class App {
         //DEFAULT TARGET IS (0,0,0);
         this.sun.castShadow = true;
         
-        this.sun.shadow.mapSize.width = 2048;
-        this.sun.shadow.mapSize.height = 2048;
+        this.sun.shadow.mapSize.set( 4096, 4096 );
         this.sun.shadow.camera.left = -100;
         this.sun.shadow.camera.right = 100;
         this.sun.shadow.camera.top = 100;
@@ -254,133 +260,95 @@ export class App {
         this.renderer.shadowMap.enabled = true;
         this.renderer.shadowMap.type = THREE.PCFShadowMap;
         this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        
+        const resize = () => {
+            this.camera.aspect = window.innerWidth / window.innerHeight;
+            this.camera.updateProjectionMatrix();
+            this.renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        window.addEventListener('resize', resize );
+
+
+        const update_Blades = () => {
+            this.bladeInstancesMatrix.rotation.y +=0.01;
+            console.log(this.bladeInstances.length);
+
+            for(let i = 0; i < 5; i++){
+
+                this.bladeInstancesMatrix.position.set(5 , 8.2, 5 + 3*i);
+                this.bladeInstancesMatrix.rotation.x = -Math.PI / 2;
+                this.bladeInstancesMatrix.updateMatrix();
+                this.bladeInstances.forEach((im) => {
+                    im.setMatrixAt(i, this.bladeInstancesMatrix.matrix);
+                    im.instanceMatrix.needsUpdate = true;
+                });
+            }
+
+            
+            for(let i = 5; i < 10; i++){
+
+                this.bladeInstancesMatrix.position.set(8 , 8.2, 5 + 3*(9-i));
+                this.bladeInstancesMatrix.rotation.x = -Math.PI / 2;
+                this.bladeInstancesMatrix.updateMatrix();
+                this.bladeInstances.forEach((im) => {
+                    im.setMatrixAt(i, this.bladeInstancesMatrix.matrix);
+                    im.instanceMatrix.needsUpdate = true;
+                });
+            }
+        }
+        const update_SolarPanels = () => {
+            //this.solarPanelInstancesMatrix.rotation.y +=0.1
+            if (this.sun.position.y > 0) {
+                solar_Panel.lookAtPanels(this.sun.position);
+            } else {
+                solar_Panel.setPanelRotation(
+                    new THREE.Euler(-Math.PI / 2, 0, 0)
+                );
+            }
+        }
+        //From https://threejsdemos.com/demos/lighting/day-cycle
+        const update_light = () => {
+            const t = this.timeOfDay
+            const theta = t * Math.PI * 2
+            const y = Math.sin(theta)
+            const x = Math.cos(theta)
+            this.sun.position.set(50 * x, 30 * Math.max(0.1, y), 2)
+            const dayColor = new THREE.Color(0x87ceeb)
+            const nightColor = new THREE.Color(0x0b1020)
+            this.scene.background = dayColor.clone().lerp(nightColor, 1 - Math.max(0, y))
+            const sunWarm = new THREE.Color(0xffe0a0)
+            const moonBlue = new THREE.Color(0xaaccff)
+            this.sun.color = sunWarm.clone().lerp(moonBlue, y < 0 ? 1 : 0)
+            this.sun.intensity = y > 0 ? 2 * y : 0.2
+            this.ambient.intensity = 0.1 + 0.4 * Math.max(0, y)
+        }
+
+        const animate = () => {
+            this.timeOfDay = (this.timeOfDay + 0.00015) % 1
+            update_light();
+
+            update_Blades();
+            update_SolarPanels();
+
+
+
+            this.controls.update();
+            this.renderer.render(this.scene, this.camera);
+        }
+        this.renderer.setAnimationLoop(animate);
+
+        
+
     
 
     }
 
-    update() {
-
-        this.renderer.setAnimationLoop(this.renderloop);
-        //resize
-        window.addEventListener('resize', () => {
-            this.camera.aspect = window.innerWidth / window.innerHeight;
-            this.camera.updateProjectionMatrix();
-            this.renderer.setSize(window.innerWidth, window.innerHeight);
-        });
-    }
-
-
-    update_Blades() {
-        this.bladeInstancesMatrix.rotation.y +=0.01;
-        console.log(this.bladeInstances.length);
-
-        for(let i = 0; i < 5; i++){
-
-            this.bladeInstancesMatrix.position.set(5 , 8.2, 5 + 3*i);
-            this.bladeInstancesMatrix.rotation.x = -Math.PI / 2;
-            this.bladeInstancesMatrix.updateMatrix();
-            this.bladeInstances.forEach((im) => {
-                im.setMatrixAt(i, this.bladeInstancesMatrix.matrix);
-                im.instanceMatrix.needsUpdate = true;
-            });
-        }
-
-        
-        for(let i = 5; i < 10; i++){
-
-            this.bladeInstancesMatrix.position.set(8 , 8.2, 5 + 3*(9-i));
-            this.bladeInstancesMatrix.rotation.x = -Math.PI / 2;
-            this.bladeInstancesMatrix.updateMatrix();
-            this.bladeInstances.forEach((im) => {
-                im.setMatrixAt(i, this.bladeInstancesMatrix.matrix);
-                im.instanceMatrix.needsUpdate = true;
-            });
-        }
-    }
-
-    update_SolarPanels(){
-        //this.solarPanelInstancesMatrix.rotation.y +=0.1
-
-        let index = 0;
-        for (let x = 5; x <= 10; x++) {
-            for (let z = 0; z <= 5; z++) {
-
-
-                this.solarPanel.solarPanelInstancesMatrix.position.set(x*2.5 -15, 1, -z*3);
-
-                if (this.sun.position.y > 0) {
-                    this.solarPanel.solarPanelInstancesMatrix.lookAt(this.sun.position);
-                } else {
-                        // Slowly return to looking up
-                    this.solarPanel.solarPanelInstancesMatrix.rotation.x =
-                        THREE.MathUtils.lerp(
-                            this.solarPanel.solarPanelInstancesMatrix.rotation.x,
-                            -Math.PI / 2,
-                            0.02
-                        );
-
-                    this.solarPanel.solarPanelInstancesMatrix.rotation.y =
-                        THREE.MathUtils.lerp(
-                            this.solarPanel.solarPanelInstancesMatrix.rotation.y,
-                            0,
-                            0.02
-                        );
-
-                    this.solarPanel.solarPanelInstancesMatrix.rotation.z =
-                        THREE.MathUtils.lerp(
-                            this.solarPanel.solarPanelInstancesMatrix.rotation.z,
-                            0,
-                            0.02
-                        );
-                
-                    }
-                this.solarPanel.solarPanelInstancesMatrix.updateMatrix();
-
-                this.solarPanel.solarPanelInstances.forEach((im) => {
-                    const finalMatrix = this.solarPanel.solarPanelInstancesMatrix.matrix.clone();
-                    finalMatrix.multiply(im.userData.localMatrix);
-
-                    im.setMatrixAt(index, finalMatrix);
-                    im.instanceMatrix.needsUpdate = true;
-
-                });
-
-                index++;
-            }
-        }
-
-    }
-
-    //From https://threejsdemos.com/demos/lighting/day-cycle
-    update_light(time) {
-        const t = this.timeOfDay
-        const theta = t * Math.PI * 2
-        const y = Math.sin(theta)
-        const x = Math.cos(theta)
-        this.sun.position.set(50 * x, 30 * Math.max(0.1, y), 2)
-        const dayColor = new THREE.Color(0x87ceeb)
-        const nightColor = new THREE.Color(0x0b1020)
-        this.scene.background = dayColor.clone().lerp(nightColor, 1 - Math.max(0, y))
-        const sunWarm = new THREE.Color(0xffe0a0)
-        const moonBlue = new THREE.Color(0xaaccff)
-        this.sun.color = sunWarm.clone().lerp(moonBlue, y < 0 ? 1 : 0)
-        this.sun.intensity = y > 0 ? 2 * y : 0.2
-        this.ambient.intensity = 0.1 + 0.4 * Math.max(0, y)
-    }
-
-    renderloop = () => {
-        this.timeOfDay = (this.timeOfDay + 0.00015) % 1
-        this.update_light();
-
-        this.update_Blades();
-        this.update_SolarPanels();
 
 
 
-        this.controls.update();
-        this.renderer.render(this.scene, this.camera);
-        //window.requestAnimationFrame(renderloop);
-        
-        
-    }
+
+
+
+    
+
 }
