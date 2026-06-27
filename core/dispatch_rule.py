@@ -77,7 +77,7 @@ class BESSRuleEngine:
             pv_signals.append(pv_status)
             pv_logs.append(pv_msg)
 
-            # Lấy lượng điện thặng dư / thiếu hụt đã được tính toán sẵn từ file của đồng đội
+            # Lấy lượng điện thặng dư / thiếu hụt đã được tính toán sẵn từ file
             p_surplus = row.get('P_surplus_MW', 0.0)
             p_deficit = row.get('P_deficit_MW', 0.0)
 
