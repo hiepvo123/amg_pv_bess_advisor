@@ -1,0 +1,3 @@
+scenario,target_power_mw,target_duration_h,target_energy_mwh,required_units,limiting_requirement,installed_power_mw,installed_energy_mwh,duration_at_target_power_h,power_margin_percent,energy_margin_percent,offgrid_parallel_warning,design_note
+4MW-2h,4.0,2.0,8.0,37,power,4.07,8.473,2.11825,1.7500000000000002,5.9125,True,Sizing satisfies both target power and target energy.
+4MW-4h,4.0,4.0,16.0,70,energy,7.7,16.03,4.0075,92.5,0.1875,True,Installed PCS power is significantly higher than target power. Use export/control limit at target power or request a 4h-specific configuration.
