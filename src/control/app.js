@@ -10,6 +10,8 @@ import { VertexNormalsHelper } from 'three/addons/helpers/VertexNormalsHelper.js
 import { TransmissionTower } from '../model/transmission_tower.js';
 import { WindTurbine } from '../model/wind_turbine.js';
 import { PowerPredictions } from '../model/power_predictions.js';
+import { SkyMesh } from 'three/addons/objects/SkyMesh.js';
+import { pass, rangeFogFactor,color, fog, positionWorld, triNoise3D, normalWorld, uniform, densityFogFactor } from 'three/tsl';
 
 
 
@@ -18,6 +20,7 @@ export class App {
     renderer;
     camera;
     controls;
+    renderPipeline;
 
     //Lighting params
     timeOfDay;
@@ -57,11 +60,12 @@ export class App {
             this.renderer.domElement
         );
 
-        await this.createAssets();
+        await this.run();
     }
 
-    async createAssets() {
+    async run() {
         //TODO: REFACTOR THIS MESS
+        
         //assets
         this.controls = new OrbitControls(this.camera, this.renderer.domElement);
         this.controls.enableDamping = true;
@@ -70,7 +74,6 @@ export class App {
             1
         );
         this.scene.add( this.ambient );
-        
         
         const geometry = new THREE.PlaneGeometry( 1, 1 );
         const material = new THREE.MeshPhongMaterial( {color: 0x999999, side: THREE.DoubleSide} );
@@ -86,15 +89,10 @@ export class App {
         plane.receiveShadow = true;
         this.scene.add( plane );
 
-        this.solarPanel = new SolarPanel(this.scene);
-        this.solarPanelInstances = [];
-        const solarPanelCount = 36;
-        const solarBaseInstance = []
-        this.solarPanel.addToScene();
-
-        
-
         let solar_Panel = new SolarPanel(this.scene);
+        solar_Panel.addToScene(this.scene);
+
+        solar_Panel.setBases();
 
         
         
@@ -103,123 +101,24 @@ export class App {
         await transmissionTower.load();
 
         await transmissionTower.addToScene();
-        let towerPos = new THREE.Vector3(-7,0,0);
-        transmissionTower.setTowerPos(0,towerPos);
+        let towerPos = new THREE.Vector3(-7,0,15);
+        let towerPos2 = new THREE.Vector3(-7,0,-15);
+        transmissionTower.setTowerPos(1,towerPos);
+        transmissionTower.setTowerPos(2,towerPos2);
         
 
         
-        const tree = new Tree();
+        const tree = new Tree(this.scene);
         await tree.load();
 
-        const instancedMeshes = [];
-        const treeCount = 400;
-
-        tree.meshes.forEach((mesh) => {
-            const im = new THREE.InstancedMesh(
-                mesh.geometry,
-                mesh.material,
-                treeCount
-            );
-
-            im.castShadow = true;
-            im.receiveShadow = true;
-
-            this.scene.add(im);
-            instancedMeshes.push(im);
-        });
-
-        const treeMatrix = new THREE.Object3D();
-        treeMatrix.scale.set(0.5,0.5,0.5);
-
-        const clearRadius = 15; // empty square from -10 to 10
-
-        for (let i = 0; i < treeCount; i++) {
-            let x, z;
-
-            do {
-                x = Math.random() * 100 - 50;
-                z = Math.random() * 100 - 50;
-            } while (
-                Math.abs(x) < clearRadius &&
-                Math.abs(z) < clearRadius
-            );
-
-            treeMatrix.position.set(x, 0, z);
-            //treeMatrix.scale.set(0.75,0.75,0.75);
-            
-            //treeMatrix.rotation.y = Math.random() * Math.PI * 2;
-
-            treeMatrix.updateMatrix();
-
-            instancedMeshes.forEach((im) => {
-                im.setMatrixAt(i, treeMatrix.matrix);
-                im.instanceMatrix.needsUpdate = true;
-            });
-        }
+        tree.addToScene()
 
         
-        const windTurbine = new WindTurbine();
+        const windTurbine = new WindTurbine(this.scene);
 
         await windTurbine.load();
-        const instancedTurbines = [];
-        this.bladeInstances =[];
-
-        windTurbine.meshes.forEach((mesh) => {
-            //console.log(
-            //    mesh.name,
-            //    mesh.position,
-            //    mesh.rotation
-            //);
-
-            const im = new THREE.InstancedMesh(
-                mesh.geometry,
-                mesh.material,
-                10
-            );
-
-            im.castShadow = true;
-            //im.receiveShadow = true;
-
-            if (mesh.name === 'WindTurbine_Blades001_Material002_0') {
-                this.bladeInstances.push(im) ;
-            } else {
-                instancedTurbines.push(im);
-            }
-
-            this.scene.add(im);
-
-        });
-
-        const bodyTurbineMatrix = new THREE.Object3D();
-        this.bladeInstancesMatrix = new THREE.Object3D();
-        bodyTurbineMatrix.scale.set(2,2,2);
-        this.bladeInstancesMatrix.scale.set(2,2,2);
-
-        for (let i = 0; i < 5; i++) {
-            bodyTurbineMatrix.position.set(5, 8.2, 5 + 3*i);
-            bodyTurbineMatrix.rotation.x = -Math.PI / 2;
-            bodyTurbineMatrix.updateMatrix();
-
-            instancedTurbines.forEach((im) => {
-                im.setMatrixAt(i, bodyTurbineMatrix.matrix);
-                im.instanceMatrix.needsUpdate = true
-            });
-
-            //bladeInstances.setMatrixAt(i, bladeDummy.matrix);
-        }
-
-        for (let i = 5; i < 10; i++) {
-            bodyTurbineMatrix.position.set(8, 8.2, 5 + 3*(9-i));
-            bodyTurbineMatrix.rotation.x = -Math.PI / 2;
-            bodyTurbineMatrix.updateMatrix();
-
-            instancedTurbines.forEach((im) => {
-                im.setMatrixAt(i, bodyTurbineMatrix.matrix);
-                im.instanceMatrix.needsUpdate = true
-            });
-
-            //bladeInstances.setMatrixAt(i, bladeDummy.matrix);
-        }
+        windTurbine.addToScene()
+        
 
 
 
@@ -236,8 +135,7 @@ export class App {
         //DEFAULT TARGET IS (0,0,0);
         this.sun.castShadow = true;
         
-        this.sun.shadow.mapSize.width = 2048;
-        this.sun.shadow.mapSize.height = 2048;
+        this.sun.shadow.mapSize.set( 4096, 4096 );
         this.sun.shadow.camera.left = -100;
         this.sun.shadow.camera.right = 100;
         this.sun.shadow.camera.top = 100;
@@ -254,133 +152,70 @@ export class App {
         this.renderer.shadowMap.enabled = true;
         this.renderer.shadowMap.type = THREE.PCFShadowMap;
         this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        
+        const resize = () => {
+            this.camera.aspect = window.innerWidth / window.innerHeight;
+            this.camera.updateProjectionMatrix();
+            this.renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        window.addEventListener('resize', resize );
+
+
+
+        const update_SolarPanels = () => {
+            //this.solarPanelInstancesMatrix.rotation.y +=0.1
+            if (this.sun.position.y > 0) {
+                solar_Panel.lookAtPanels(this.sun.position);
+            } else {
+                solar_Panel.setPanelRotation(
+                    new THREE.Euler(-Math.PI / 2, 0, 0)
+                );
+            }
+        }
+        //From https://threejsdemos.com/demos/lighting/day-cycle
+        const update_light = () => {
+            const t = this.timeOfDay
+            const theta = t * Math.PI * 2
+            const y = Math.sin(theta)
+            const x = Math.cos(theta)
+            this.sun.position.set(50 * x, 30 * Math.max(0.1, y), 2)
+            const dayColor = new THREE.Color(0x87ceeb)
+            const nightColor = new THREE.Color(0x0b1020)
+            this.scene.background = dayColor.clone().lerp(nightColor, 1 - Math.max(0, y))
+            const sunWarm = new THREE.Color(0xffe0a0)
+            const moonBlue = new THREE.Color(0xaaccff)
+            this.sun.color = sunWarm.clone().lerp(moonBlue, y < 0 ? 1 : 0)
+            this.sun.intensity = y > 0 ? 2 * y : 0.2
+            this.ambient.intensity = 0.1 + 0.4 * Math.max(0, y)
+        }
+
+        const animate = () => {
+            this.timeOfDay = (this.timeOfDay + 0.00015) % 1
+            update_light();
+
+            //update_Blades();
+            windTurbine.updateBlades();
+            update_SolarPanels();
+
+
+
+            this.controls.update();
+            this.renderer.render(this.scene, this.camera);
+        }
+        this.renderer.setAnimationLoop(animate);
+
+        
+
     
 
     }
 
-    update() {
-
-        this.renderer.setAnimationLoop(this.renderloop);
-        //resize
-        window.addEventListener('resize', () => {
-            this.camera.aspect = window.innerWidth / window.innerHeight;
-            this.camera.updateProjectionMatrix();
-            this.renderer.setSize(window.innerWidth, window.innerHeight);
-        });
-    }
-
-
-    update_Blades() {
-        this.bladeInstancesMatrix.rotation.y +=0.01;
-        console.log(this.bladeInstances.length);
-
-        for(let i = 0; i < 5; i++){
-
-            this.bladeInstancesMatrix.position.set(5 , 8.2, 5 + 3*i);
-            this.bladeInstancesMatrix.rotation.x = -Math.PI / 2;
-            this.bladeInstancesMatrix.updateMatrix();
-            this.bladeInstances.forEach((im) => {
-                im.setMatrixAt(i, this.bladeInstancesMatrix.matrix);
-                im.instanceMatrix.needsUpdate = true;
-            });
-        }
-
-        
-        for(let i = 5; i < 10; i++){
-
-            this.bladeInstancesMatrix.position.set(8 , 8.2, 5 + 3*(9-i));
-            this.bladeInstancesMatrix.rotation.x = -Math.PI / 2;
-            this.bladeInstancesMatrix.updateMatrix();
-            this.bladeInstances.forEach((im) => {
-                im.setMatrixAt(i, this.bladeInstancesMatrix.matrix);
-                im.instanceMatrix.needsUpdate = true;
-            });
-        }
-    }
-
-    update_SolarPanels(){
-        //this.solarPanelInstancesMatrix.rotation.y +=0.1
-
-        let index = 0;
-        for (let x = 5; x <= 10; x++) {
-            for (let z = 0; z <= 5; z++) {
-
-
-                this.solarPanel.solarPanelInstancesMatrix.position.set(x*2.5 -15, 1, -z*3);
-
-                if (this.sun.position.y > 0) {
-                    this.solarPanel.solarPanelInstancesMatrix.lookAt(this.sun.position);
-                } else {
-                        // Slowly return to looking up
-                    this.solarPanel.solarPanelInstancesMatrix.rotation.x =
-                        THREE.MathUtils.lerp(
-                            this.solarPanel.solarPanelInstancesMatrix.rotation.x,
-                            -Math.PI / 2,
-                            0.02
-                        );
-
-                    this.solarPanel.solarPanelInstancesMatrix.rotation.y =
-                        THREE.MathUtils.lerp(
-                            this.solarPanel.solarPanelInstancesMatrix.rotation.y,
-                            0,
-                            0.02
-                        );
-
-                    this.solarPanel.solarPanelInstancesMatrix.rotation.z =
-                        THREE.MathUtils.lerp(
-                            this.solarPanel.solarPanelInstancesMatrix.rotation.z,
-                            0,
-                            0.02
-                        );
-                
-                    }
-                this.solarPanel.solarPanelInstancesMatrix.updateMatrix();
-
-                this.solarPanel.solarPanelInstances.forEach((im) => {
-                    const finalMatrix = this.solarPanel.solarPanelInstancesMatrix.matrix.clone();
-                    finalMatrix.multiply(im.userData.localMatrix);
-
-                    im.setMatrixAt(index, finalMatrix);
-                    im.instanceMatrix.needsUpdate = true;
-
-                });
-
-                index++;
-            }
-        }
-
-    }
-
-    //From https://threejsdemos.com/demos/lighting/day-cycle
-    update_light(time) {
-        const t = this.timeOfDay
-        const theta = t * Math.PI * 2
-        const y = Math.sin(theta)
-        const x = Math.cos(theta)
-        this.sun.position.set(50 * x, 30 * Math.max(0.1, y), 2)
-        const dayColor = new THREE.Color(0x87ceeb)
-        const nightColor = new THREE.Color(0x0b1020)
-        this.scene.background = dayColor.clone().lerp(nightColor, 1 - Math.max(0, y))
-        const sunWarm = new THREE.Color(0xffe0a0)
-        const moonBlue = new THREE.Color(0xaaccff)
-        this.sun.color = sunWarm.clone().lerp(moonBlue, y < 0 ? 1 : 0)
-        this.sun.intensity = y > 0 ? 2 * y : 0.2
-        this.ambient.intensity = 0.1 + 0.4 * Math.max(0, y)
-    }
-
-    renderloop = () => {
-        this.timeOfDay = (this.timeOfDay + 0.00015) % 1
-        this.update_light();
-
-        this.update_Blades();
-        this.update_SolarPanels();
 
 
 
-        this.controls.update();
-        this.renderer.render(this.scene, this.camera);
-        //window.requestAnimationFrame(renderloop);
-        
-        
-    }
+
+
+
+    
+
 }
