@@ -1,14 +1,41 @@
 {
-    "capex": 43000000000,
-    "opex": 500000000,
-    "discount_rate": 0.1,
+    "capex": 738532600000,
+    "pv_capex": 588532600000,
+    "bess_capex": 150000000000,
+    "opex": 12351144000,
+
+    "discount_rate": 0.10,
     "project_life": 20,
 
-    "electricity_price": 1800,
+    "loan_fraction": 0.70,
+    "loan_interest_rate": 0.08,
+    "loan_term": 20,
 
-    "annual_pv_energy": 50000000,
+    "tax_rate": 0.20,
+    "inflation_rate": 0.025,
 
-    "annual_bess_energy": 5000000,
+    "price_growth_rate": 0.02,
 
-    "annual_revenue": 9000000000
+    "pv_degradation_rate": 0.005,
+    "battery_degradation_rate": 0.02,
+
+    "battery_replacement_cost": 75000000000,
+    "battery_replacement_year": 10,
+
+    "inverter_replacement_cost": 20000000000,
+    "inverter_replacement_year": 12,
+
+    "salvage_value": 20000000000,
+
+    "electricity_price": 1284,
+
+    "depreciation_years": 20,
+
+    "inverter_capex": 40000000000,
+
+    "other_capex": 28532600000,
+
+    "pv_opex": 8000000000,
+
+    "bess_opex": 4351144000
 }
