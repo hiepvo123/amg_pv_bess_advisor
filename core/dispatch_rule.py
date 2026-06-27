@@ -36,50 +36,19 @@ class BESSRuleEngine:
         # Các khung giờ còn lại
         return "STANDARD"
 
-    def diagnostics_pv_tracking(self, row) -> tuple:
-        """
-        Cross-examines real-time plane-of-array (POA) tilt irradiance against measured output 
-        from Meter 431 to diagnose shading, tracker blocks, or panel degradation.
-        """
-        p_actual = row.get('p_meter_431_mw', 0.0)
-        irradiance = row.get('irradiance_poa_wm2', 0.0)
-        temp_pv = row.get('temp_pv_c', 0.0)
-        is_daytime = row.get('is_daytime', False)
-
-        if not is_daytime or pd.isna(irradiance) or irradiance < 40.0:
-            return "OK", "Night/Low Irradiance Dormancy"
-
-        ###############
-        # Calculate expected clean-sky plant capacity based on temperature derating
-        # (mô hình chuẩn ~28.2 MW của Đa Mi)
-        p_expected_stc = (irradiance / 1000.0) * 28.2  
-        thermal_coefficient = 1.0 - 0.004 * (temp_pv - 25.0) if pd.notna(temp_pv) else 1.0
-        p_expected = max(0.0, p_expected_stc * thermal_coefficient)
-        ###############
-
-        if p_expected > 0:
-            deviation_ratio = p_actual / p_expected
-            if deviation_ratio < 0.35:
-                return "CRITICAL_FAULT", "Dual-Axis Tracking Actuator Blocked / Severe Shading"
-            elif deviation_ratio < 0.75:
-                return "WARNING", "Soiling Effect / Dust Accumulation / Panel Hotspot Alert"
-            elif deviation_ratio > 1.35:
-                return "SENSOR_FAULT", "Meter 431 or POA Pyranometer Calibration Drift"
-        
-        return "OK", "Optimal Trajectory Efficiency"
-
-    def execute_pipeline(self, df_clean: pd.DataFrame, agc_multiplier: float = 1.0) -> pd.DataFrame:
+    def execute_pipeline(self, df_clean: pd.DataFrame) -> pd.DataFrame:
         """
         Processes the cleaned data timeline to run the multi-layered control dispatch rules
         and output financial and operational columns.
-        Tham số:
-        agc_multiplier (float): Hệ số bóp tải cho kịch bản độ nhạy
-                                (ex: 0.8 tương ứng giảm tải 20%)
         """
         df = df_clean.copy()
 
         # Đồng bộ hóa dữ liệu thời gian để tính khung giá EVN
-        if 'datetime' in df.columns:
+        if 'timestamp' in df.columns:
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df['hour_local'] = df['timestamp'].dt.hour
+            df['minute_local'] = df['timestamp'].dt.minute
+        elif 'datetime' in df.columns:
             df['datetime'] = pd.to_datetime(df['datetime'])
             df['hour_local'] = df['datetime'].dt.hour
             df['minute_local'] = df['datetime'].dt.minute
@@ -90,9 +59,7 @@ class BESSRuleEngine:
         n = len(df)
         cmd_list = []
         req_power_kw_list = []
-        pv_signals, pv_logs, revenue_streams = [], [], []
         pv_signals = []
-        pv_curtailments = []
         pv_logs = []
         reasons = []
 
@@ -101,83 +68,61 @@ class BESSRuleEngine:
             minute = int(row['minute_local'])
             tier = self.get_evn_time_tier(hour, minute)
             
-            # Execute PV structural fault analysis layer
-            pv_status, pv_msg = self.diagnostics_pv_tracking(row)
+            # đọc chẩn đoán sức khỏe PV
+            p_pv = row.get('P_PV_MW', 0.0)
+            if pd.isna(p_pv): p_pv = 0.0
+
+            # Map tạm thời các trường chẩn đoán
+            pv_status, pv_msg = "OK", "Optimal Trajectory Efficiency"
             pv_signals.append(pv_status)
             pv_logs.append(pv_msg)
 
-            #############
-            # 1. Get the actual real power injected into the grid through breaker bay 431
-            p_pv = row.get('p_meter_431_mw', 0.0)
-            if pd.isna(p_pv): p_pv = 0.0
+            # Lấy lượng điện thặng dư / thiếu hụt đã được tính toán sẵn từ file của đồng đội
+            p_surplus = row.get('P_surplus_MW', 0.0)
+            p_deficit = row.get('P_deficit_MW', 0.0)
 
-            # 2. Extract the AGC Setpoint (giới hạn điều độ lưới điện từ hệ thống AGC)
-            # If AGC is missing/empty, assume the grid allows the plant to export at max peak capacity (28.2 MW)
-            p_base_limit = row.get('p_setpoint_agc_mw', 28.2)
-            if pd.isna(p_base_limit): p_base_limit = 28.2
-            # TÍCH HỢP HỆ SỐ ĐỘ NHẠY AGC MULTIPLIER
-            p_grid_limit = p_base_limit * agc_multiplier
-
-            # 3. Calculate true excess power that CANNOT be exported to the grid 
-            p_excess = p_pv - p_grid_limit
-            ############
+            # Xử lý an toàn NaN cho dữ liệu thô
+            if pd.isna(p_surplus): p_surplus = 0.0
+            if pd.isna(p_deficit): p_deficit = 0.0
 
             cmd = "IDLE"
             req_power_kw = 0.0
             reason = "System Equilibrium"
-            reason_prefix = f"AGC_MODIFIED [{p_grid_limit:.1f}MW] | " if agc_multiplier < 1.0 else ""
 
-            # MULTI-LAYERED RULE ENGINE DISPATCH LOGIC
-            if pv_status == "CRITICAL_FAULT":
-                # Severe plant anomaly -> Lock BESS to stabilize interconnected substation node
-                cmd = "IDLE"
-                req_power_kw = 0.0
-                reason = f"PROTECTION: BESS Locked due to PV Plant Failure [{pv_msg}]"
 
-            else:
-                # Setup proper context strings if handling a sensor anomaly
-                if pv_status == "SENSOR_FAULT":
-                    # Linh hoạt kiếm dữ liệu từ hai nguồn đo dự phòng:
-                    # Lấy cột lệnh điều độ của A0 (a0_mw)
-                    # Hoặc công suất dự báo từ hệ thống DHD (dhd_mw)
-                    # Nếu cả hai đều mất tín hiệu gán bằng 0
-                    p_fallback = row.get('a0_mw', row.get('dhd_mw', 0.0))
-                    if pd.isna(p_fallback): p_fallback = 0.0
-                    p_excess = p_fallback - p_grid_limit
-                    reason_prefix += "SENSOR_FALLBACK | "
+            # Sạc giá rẻ từ lưới (Thấp điểm)
+            if tier == "OFF_PEAK":
+                # Rule 3: Low Price Charging (Grid Ingestion)
+                cmd = "CHARGE"
+                req_power_kw = self.bess_params.pcs_power_kw
+                reason = "Rule 3: Low-Cost Grid Absorption"
 
-                # Sạc giá rẻ từ lưới (Thấp điểm)
-                if tier == "OFF_PEAK":
-                    # Rule 3: Low Price Charging (Grid Ingestion)
-                    cmd = "CHARGE"
-                    req_power_kw = self.bess_params.pcs_power_kw
-                    reason = reason_prefix + "Tariff Optimization: Low-Cost Grid Absorption"
+            # Xả kiếm chênh lệch giá (Cao điểm)
+            elif tier == "PEAK":
+                # Rule 4: High Price Discharging (Grid Injection Arbitrage)
+                cmd = "DISCHARGE"
+                # Yêu cầu xả tối đa công suất PCS phát lưới giá cao
+                req_power_kw = self.bess_params.pcs_power_kw
+                reason = "Rule 4: High Price Window Discharging"
 
-                # Xả kiếm chênh lệch giá (Cao điểm)
-                elif tier == "PEAK":
-                    # Rule 4: High Price Discharging (Grid Injection Arbitrage)
-                    cmd = "DISCHARGE"
-                    # Yêu cầu xả tối đa công suất PCS phát lưới giá cao
-                    req_power_kw = self.bess_params.pcs_power_kw
-                    reason = reason_prefix + "Rule 4: High Price Window Discharging"
+            # Hấp thụ công suất bóp tải (Rule 1)
+            elif p_surplus > 0:
+                cmd = "CHARGE"
+                req_power_kw = p_surplus * 1000.0 # Chuyển MW sang kW
+                reason = "Rule 1: Absorbing Excess Solar Generation"
 
-                # Hấp thụ công suất bóp tải (Rule 1)
-                elif p_excess > 0:
-                    cmd = "CHARGE"
-                    req_power_kw = p_excess * 1000.0 # Chuyển MW sang kW
-                    reason = reason_prefix + "Rule 1: Absorbing Excess Solar Generation"
-
-                # Bù thiếu hụt tải lưới ban ngày (Rule 2)
-                elif p_excess < 0:
-                    cmd = "DISCHARGE"
-                    req_power_kw = abs(p_excess) * 1000.0 # Chuyển MW sang kW
-                    reason = reason_prefix + "Rule 2: Discharging to Bridge Generation Deficit"
+            # Bù thiếu hụt tải lưới ban ngày (Rule 2)
+            elif p_deficit > 0:
+                cmd = "DISCHARGE"
+                req_power_kw = p_deficit * 1000.0 # Chuyển MW sang kW
+                reason = "Rule 2: Discharging to Bridge Generation Deficit"
 
             # Rule 5 & 6 được xử lý trong bes_model.py: khi BESS đã đạt giới hạn SOC tối đa hoặc tối thiểu
 
             cmd_list.append(cmd)
             req_power_kw_list.append(req_power_kw)
             reasons.append(reason)
+
         df['tariff_tier'] = [self.get_evn_time_tier(int(h), int(m)) for h, m in zip(df['hour_local'], df['minute_local'])]
         df['pv_health_status'] = pv_signals
         df['pv_tracking_log'] = pv_logs
@@ -211,23 +156,19 @@ class BESSRuleEngine:
             p_actual_mw = row['bess_power_output_mw']
             tier = row['tariff_tier']
             reason = row['decision_justification']
-
-            p_pv = row.get('p_meter_431_mw', 0.0)
-            if pd.isna(p_pv): p_pv = 0.0
-            p_grid_limit = row.get('p_setpoint_agc_mw', 28.2) * agc_multiplier
-            p_excess = max(0.0, p_pv - p_grid_limit)
+            p_surplus = row.get('P_surplus_MW', 0.0)
 
             # Tính toán lượng Solar bị cắt giảm lãng phí (wasted curtailment) do pin đầy
-            if "Rule 5" in reason or (row['rule_engine_decision'] == "CHARGE" and p_actual_mw < p_excess):
-                wasted = p_excess - max(0.0, p_actual_mw)
+            if row['rule_engine_decision'] == "CHARGE" and p_actual_mw < p_surplus:
+                wasted = p_surplus - max(0.0, p_actual_mw)
                 pv_curtailments.append(max(0.0, wasted))
             else:
                 pv_curtailments.append(0.0)
 
-        # Doanh thu thương mại dựa trên sản lượng điện thực tế đi qua Inverter (MWh)
+        # Doanh thu từ việc sạc/xả pin theo khung giá EVN
         # Bước thời gian dt = 0.5h
             if p_actual_mw > 0:  # BESS Sạc điện vào hệ thống pin
-                if "Tariff Optimization" in reason:
+                if "Rule 3" in reason:
                     # Nếu mua sạc từ lưới điện quốc gia
                     cost = p_actual_mw * 0.5 * self.tariffs[tier]["buy_from_grid"]
                     revenue_streams.append(-cost)

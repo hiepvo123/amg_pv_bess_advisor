@@ -1,14 +1,10 @@
 """
 Main pipeline orchestrator.
 """
-<<<<<<< Updated upstream
-=======
-from core.modeling_section.dispatch_rule import BESSRuleEngine
 from core.modeling_section.financial_model import (
     FinancialModel,
     load_financial_config
 )
->>>>>>> Stashed changes
 import argparse
 import sys
 from pathlib import Path
