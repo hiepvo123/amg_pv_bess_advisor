@@ -60,10 +60,10 @@ export class App {
             this.renderer.domElement
         );
 
-        await this.createAssets();
+        await this.run();
     }
 
-    async createAssets() {
+    async run() {
         //TODO: REFACTOR THIS MESS
         
         //assets
@@ -74,7 +74,6 @@ export class App {
             1
         );
         this.scene.add( this.ambient );
-        
         
         const geometry = new THREE.PlaneGeometry( 1, 1 );
         const material = new THREE.MeshPhongMaterial( {color: 0x999999, side: THREE.DoubleSide} );
@@ -90,14 +89,6 @@ export class App {
         plane.receiveShadow = true;
         this.scene.add( plane );
 
-        //this.solarPanel = new SolarPanel(this.scene);
-        //this.solarPanelInstances = [];
-        const solarPanelCount = 36;
-        const solarBaseInstance = []
-        //this.solarPanel.addToScene();
-
-        
-
         let solar_Panel = new SolarPanel(this.scene);
         solar_Panel.addToScene(this.scene);
 
@@ -110,59 +101,17 @@ export class App {
         await transmissionTower.load();
 
         await transmissionTower.addToScene();
-        let towerPos = new THREE.Vector3(-13,0,0);
+        let towerPos = new THREE.Vector3(-7,0,15);
+        let towerPos2 = new THREE.Vector3(-7,0,-15);
         transmissionTower.setTowerPos(1,towerPos);
+        transmissionTower.setTowerPos(2,towerPos2);
         
 
         
-        const tree = new Tree();
+        const tree = new Tree(this.scene);
         await tree.load();
 
-        const instancedMeshes = [];
-        const treeCount = 400;
-
-        tree.meshes.forEach((mesh) => {
-            const im = new THREE.InstancedMesh(
-                mesh.geometry,
-                mesh.material,
-                treeCount
-            );
-
-            im.castShadow = true;
-            im.receiveShadow = true;
-
-            this.scene.add(im);
-            instancedMeshes.push(im);
-        });
-
-        const treeMatrix = new THREE.Object3D();
-        treeMatrix.scale.set(0.5,0.5,0.5);
-
-        const clearRadius = 15; // empty square from -10 to 10
-
-        for (let i = 0; i < treeCount; i++) {
-            let x, z;
-
-            do {
-                x = Math.random() * 100 - 50;
-                z = Math.random() * 100 - 50;
-            } while (
-                Math.abs(x) < clearRadius &&
-                Math.abs(z) < clearRadius
-            );
-
-            treeMatrix.position.set(x, 0, z);
-            //treeMatrix.scale.set(0.75,0.75,0.75);
-            
-            //treeMatrix.rotation.y = Math.random() * Math.PI * 2;
-
-            treeMatrix.updateMatrix();
-
-            instancedMeshes.forEach((im) => {
-                im.setMatrixAt(i, treeMatrix.matrix);
-                im.instanceMatrix.needsUpdate = true;
-            });
-        }
+        tree.addToScene()
 
         
         const windTurbine = new WindTurbine();
