@@ -20,8 +20,8 @@ class FinancialModel:
         discount_rate,
         project_life,
 
-        annual_pv_energy=None,
-        annual_bess_energy=None,
+        pv_result=None,
+        bess_result=None,
 
         bess_capex=0,
 
@@ -50,7 +50,9 @@ class FinancialModel:
         depreciation_years=20,
         depreciation_method="SL",
 
-        electricity_price=1284
+        annual_revenue=None,
+        
+        electricity_price=None
 
     ):
 
@@ -77,21 +79,13 @@ class FinancialModel:
         self.pv_opex = pv_opex
         self.bess_opex = bess_opex
 
+        self.pv_result = pv_result
+        self.bess_result = bess_result
+        
         # -----------------------
         # Energy
         # -----------------------
-
-        self.pv_energy = (
-            float(annual_pv_energy)
-            if annual_pv_energy is not None
-            else 0
-        )
-
-        self.bess_energy = (
-            float(annual_bess_energy)
-            if annual_bess_energy is not None
-            else 0
-        )
+        self.initialize_energy_inputs()
 
         # -----------------------
         # Project
@@ -106,7 +100,7 @@ class FinancialModel:
             (1 + inflation_rate)
         ) - 1
 
-        self.electricity_price = electricity_price
+        self.annual_revenue = annual_revenue
 
         self.price_growth_rate = price_growth_rate
         self.opex_growth_rate = opex_growth_rate
@@ -157,6 +151,8 @@ class FinancialModel:
             self.build_depreciation_schedule()
         )
         
+        self.electricity_price = electricity_price
+        
        
     def get_depreciation(self, year):
 
@@ -177,22 +173,13 @@ class FinancialModel:
         return 0
     
     def get_revenue_for_year(self, year):
-        """
-        Annual electricity revenue after
-        PV degradation and electricity price escalation.
-        """
-
         energy = self.get_pv_energy_for_year(year)
 
-        if energy is None:
-            return 0
+        revenue = energy * 1000 * self.electricity_price
 
-        price = (
-            self.electricity_price
-            * ((1 + self.price_growth_rate) ** (year - 1))
-        )
+        revenue *= ((1 + self.price_growth_rate) ** (year - 1))
 
-        return energy * price
+        return revenue
 
     def get_opex_for_year(self, year):
         """
@@ -209,6 +196,7 @@ class FinancialModel:
             + self.bess_opex
     ) * growth
         
+        
     def build_depreciation_schedule(self):
         """
         Build annual depreciation schedule.
@@ -222,12 +210,12 @@ class FinancialModel:
         # Straight Line
         if self.depreciation_method.upper() == "SL":
 
-            annual_dep = self.capex / self.depreciation_years
+            depreciable_basis = self.capex - self.salvage_value
 
             for year in range(1, self.life + 1):
 
                 if year <= self.depreciation_years:
-                    schedule[year] = annual_dep
+                    schedule[year] = depreciable_basis
                 else:
                     schedule[year] = 0
 
@@ -313,6 +301,60 @@ class FinancialModel:
         )
     
     #HELPER FUNCTION
+    def initialize_energy_inputs(self):
+        """
+        Calculate annualized energy from PV/BESS simulation results.
+        Works for partial-year datasets.
+        """
+
+        # --------------------------
+        # PV
+        # --------------------------
+        if self.pv_result is not None:
+
+            if "pv_power_calc" not in self.pv_result.columns:
+                raise ValueError(
+                    "pv_result must contain column 'pv_power_calc'"
+                )
+
+            simulated_energy = (
+                self.pv_result["pv_power_calc"].sum() * 0.5
+            )  # MW × 0.5h = MWh
+
+            if "date" in self.pv_result.columns:
+                days = self.pv_result["date"].nunique()
+            else:
+                days = (
+                    pd.to_datetime(self.pv_result["datetime"])
+                    .dt.date.nunique()
+                )
+
+            annual_factor = 365 / days
+            self.pv_energy = simulated_energy * annual_factor
+
+        else:
+            self.pv_energy = 0
+
+        # --------------------------
+        # BESS
+        # --------------------------
+        if self.bess_result is not None:
+
+            if "energy_out_kwh" not in self.bess_result.columns:
+                raise ValueError(
+                    "bess_result must contain 'energy_out_kwh'"
+                )
+
+            simulated_bess_energy = (
+                self.bess_result["energy_out_kwh"].sum()
+            )
+
+            annual_factor = 365 / days
+            self.bess_energy = simulated_bess_energy * annual_factor
+
+        else:
+            self.bess_energy = 0
+            
     def present_value_total_pv_cost(self):
 
         total = (
@@ -325,7 +367,7 @@ class FinancialModel:
 
         for year in range(1, self.life + 1):
 
-            discount = (1 + self.real_discount_rate) ** year
+            discount = (1 + self.discount_rate) ** year
 
             total += (
                 self.pv_opex
@@ -433,13 +475,15 @@ class FinancialModel:
 
         cost = 0
 
-        if year == self.battery_replacement_year:
+        inflation = (
+            (1 + self.inflation_rate) ** (year - 1)
+        )
 
-            cost += self.battery_replacement_cost
+        if year == self.battery_replacement_year:
+            cost += self.battery_replacement_cost * inflation
 
         if year == self.inverter_replacement_year:
-
-            cost += self.inverter_replacement_cost
+            cost += self.inverter_replacement_cost * inflation
 
         return cost
 
@@ -453,7 +497,8 @@ class FinancialModel:
         rows = []
 
         # Initial equity investment
-        equity = self.capex * (1 - self.loan_fraction)
+        debt = self.capex * self.loan_fraction
+        equity = self.capex - debt
 
         cumulative = -equity
 
@@ -558,7 +603,10 @@ class FinancialModel:
                 - interest
             )
 
-            taxable_income -= self.tax_loss_balance
+            if self.tax_loss_balance > 0:
+                offset = min(taxable_income, self.tax_loss_balance)
+                taxable_income -= offset
+                self.tax_loss_balance -= offset
 
             if taxable_income < 0:
 
