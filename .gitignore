@@ -1,0 +1,53 @@
+# API Keys và biến môi trường
+.env
+.env.*
+
+# Thư mục chứa Database (Vector DB)
+chroma_db/
+fault_handling_chatbot/chroma_db/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+venv/
+.venv/
+
+# IDE và Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Data và models, các file log hoặc debug
+data/
+*.log
+*.sqlite3
+
+# Node/JavaScript (nếu có front-end hoặc công cụ đi kèm)
+node_modules/
+dist/
+build/
+.npm/
+
+# OS files
+.DS_Store
+Thumbs.db

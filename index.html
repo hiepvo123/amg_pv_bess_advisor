@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/src/style.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>bess-sim</title>
+  </head>
+  <body>
+    <!-- Chatbot Widget -->
+    <div id="chatbot-widget">
+      <div id="chatbot-header" onclick="toggleChat()">Chat with us</div>
+      <div id="chatbot-body" style="display: none;">
+        <div id="chatbot-messages">
+          <div class="chatbot-message bot">Hello! How can I help you today?</div>
+        </div>
+        <div id="chatbot-input-container">
+          <input type="text" id="chatbot-input" placeholder="Type a message..." onkeypress="handleKeyPress(event)">
+          <button onclick="sendMessage()">Send</button>
+        </div>
+      </div>
+    </div>
+    
+    <script>
+      function toggleChat() {
+        const body = document.getElementById('chatbot-body');
+        body.style.display = body.style.display === 'none' ? 'flex' : 'none';
+      }
+
+      async function sendMessage() {
+        const input = document.getElementById('chatbot-input');
+        const message = input.value.trim();
+        if (message) {
+          const messagesContainer = document.getElementById('chatbot-messages');
+          messagesContainer.innerHTML += `<div class="chatbot-message user">${message}</div>`;
+          input.value = '';
+          messagesContainer.scrollTop = messagesContainer.scrollHeight;
+          
+          const botMessageId = "msg-" + Date.now();
+          messagesContainer.innerHTML += `<div id="${botMessageId}" class="chatbot-message bot">Thinking...</div>`;
+          messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+          try {
+            const response = await fetch("http://localhost:8000/api/v1/fault-handling", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({ fault_signal: message })
+            });
+            const data = await response.json();
+            
+            let botReply = "";
+            if (data.status === "success") {
+              const fault = data.data;
+              botReply = `<b>Fault:</b> ${fault.fault_name}<br>`;
+              if (fault.possible_causes && fault.possible_causes.length > 0) {
+                 botReply += `<b>Causes:</b><ul><li>${fault.possible_causes.join("</li><li>")}</li></ul>`;
+              }
+              if (fault.recommended_actions && fault.recommended_actions.length > 0) {
+                 botReply += `<b>Actions:</b><ul><li>${fault.recommended_actions.join("</li><li>")}</li></ul>`;
+              }
+              if (data.sources && data.sources.length > 0) {
+                 botReply += `<b>Sources:</b> ${data.sources.join(", ")}`;
+              }
+            } else {
+              botReply = "Lỗi xử lý hoặc dữ liệu không hợp lệ.";
+            }
+            document.getElementById(botMessageId).innerHTML = botReply;
+          } catch (error) {
+            document.getElementById(botMessageId).innerHTML = "Không thể kết nối đến AI. Hãy chắc chắn bạn đã chạy FastAPI server.";
+          }
+          messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+      }
+
+      function handleKeyPress(event) {
+        if (event.key === 'Enter') {
+          sendMessage();
+        }
+      }
+    </script>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
