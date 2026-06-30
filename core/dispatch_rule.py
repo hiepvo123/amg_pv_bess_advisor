@@ -88,7 +88,8 @@ class BESSRuleEngine:
             cmd = "IDLE"
             req_power_kw = 0.0
             reason = "System Equilibrium"
-
+            
+            # Rule 5 & 6 được xử lý trong bes_model.py: khi BESS đã đạt giới hạn SOC tối đa hoặc tối thiểu
 
             # Sạc giá rẻ từ lưới (Thấp điểm)
             if tier == "OFF_PEAK":
@@ -113,11 +114,23 @@ class BESSRuleEngine:
 
             # Bù thiếu hụt tải lưới ban ngày (Rule 2)
             elif p_deficit > 0:
-                cmd = "DISCHARGE"
-                req_power_kw = p_deficit * 1000.0 # Chuyển MW sang kW
-                reason = "Rule 2: Discharging to Bridge Generation Deficit"
+                # CHẶN OVER-CYCLING: Nếu đang ở khung giờ STANDARD: giá mua lưới bằng giá bán.
+                # Bắt pin xả lúc này sẽ chịu tổn hao hiệu suất 95% kép và gây chai pin (giảm SoH)
+                if tier == "STANDARD":
+                    cmd = "IDLE"
+                    req_power_kw = 0.0
+                    reason = "Rule 2 Throttled: Preserving battery life during Standard tariff window"
+                else:
+                    # Dự phòng khẩn cấp; Chỉ xả cứu tải nếu rơi vào các khung giờ có lợi hoặc khẩn cấp khác
+                    cmd = "DISCHARGE"
+                    req_power_kw = p_deficit * 1000.0 # Chuyển MW sang kW
+                    reason = f"Rule 2: Discharging to Bridge Generation Deficit ({tier})"
 
-            # Rule 5 & 6 được xử lý trong bes_model.py: khi BESS đã đạt giới hạn SOC tối đa hoặc tối thiểu
+            else:
+                cmd = "IDLE"
+                req_power_kw = 0.0
+                reason = "No rules triggered: Battery Idle"
+                # p_deficit > 0: khi gặp giờ thường || OFF PEAK, hệ thống nên để trạm tự mua điện lưới bù vào phần thiếu hụt
 
             cmd_list.append(cmd)
             req_power_kw_list.append(req_power_kw)
