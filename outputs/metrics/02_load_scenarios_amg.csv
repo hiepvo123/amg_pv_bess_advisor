@@ -1,0 +1,4 @@
+scenario,Pload_MW,Qload_MVAr,Sload_MVA,cosphi
+Cuc_dai,156.7,68.03,170.83,0.92
+Cuc_tieu,24.6,9.85,26.5,0.93
+12h_16Apr2021,71.6,29.55,77.46,0.92
