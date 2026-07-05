@@ -42,7 +42,7 @@
           messagesContainer.scrollTop = messagesContainer.scrollHeight;
 
           try {
-            const response = await fetch("http://localhost:8000/api/v1/fault-handling", {
+            const response = await fetch("http://localhost:8000/api/v1/troubleshoot", {
               method: "POST",
               headers: {
                 "Content-Type": "application/json"
@@ -60,6 +60,12 @@
               }
               if (fault.recommended_actions && fault.recommended_actions.length > 0) {
                  botReply += `<b>Actions:</b><ul><li>${fault.recommended_actions.join("</li><li>")}</li></ul>`;
+              }
+              if (fault.relevant_drawings && fault.relevant_drawings.length > 0) {
+                 botReply += `<br><b>Relevant Diagrams:</b><br>`;
+                 fault.relevant_drawings.forEach(url => {
+                     botReply += `<img src="${url}" style="max-width: 100%; border-radius: 8px; margin-top: 5px; border: 1px solid #ccc;"><br>`;
+                 });
               }
               if (data.sources && data.sources.length > 0) {
                  botReply += `<b>Sources:</b> ${data.sources.join(", ")}`;

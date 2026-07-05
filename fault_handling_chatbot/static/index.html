@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fault Handling AI Agent</title>
+    <style>
+        body { font-family: Arial, sans-serif; display: flex; height: 100vh; margin: 0; background: #f5f5f5;}
+        #chat-section { width: 30%; border-right: 1px solid #ccc; display: flex; flex-direction: column; background: white;}
+        #diagram-section { width: 70%; position: relative; overflow: auto; display: flex; justify-content: center; align-items: center; background: #e0e0e0;}
+        #messages { flex: 1; padding: 20px; overflow-y: auto; }
+        .msg { margin-bottom: 15px; padding: 10px; border-radius: 8px; max-width: 90%; }
+        .user-msg { background: #007bff; color: white; align-self: flex-end; margin-left: auto;}
+        .bot-msg { background: #f1f1f1; color: black; align-self: flex-start;}
+        #input-area { display: flex; padding: 10px; border-top: 1px solid #ccc; }
+        #input-area input { flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 4px; }
+        #input-area button { padding: 10px 15px; margin-left: 10px; cursor: pointer; background: #28a745; color: white; border: none; border-radius: 4px;}
+        
+        /* Canvas stuff */
+        #canvas-container { position: relative; }
+        #diagram-img { max-width: 100%; display: none; }
+        .bounding-box {
+            position: absolute;
+            border: 3px solid red;
+            background-color: rgba(255, 0, 0, 0.2);
+            pointer-events: none;
+            display: none;
+        }
+        .loading {
+            font-style: italic;
+            color: gray;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="chat-section">
+        <h3 style="text-align: center; padding: 10px; margin: 0; background: #343a40; color: white;">AI Agent</h3>
+        <div id="messages">
+            <div class="msg bot-msg">Xin chào! Tôi là AI Agent. Bạn muốn kiểm tra trạng thái hệ thống hay tìm vị trí lỗi trên sơ đồ?</div>
+        </div>
+        <div id="input-area">
+            <input type="text" id="user-input" placeholder="Nhập câu hỏi (VD: Inverter 1 đang bị lỗi gì và nằm ở đâu?)">
+            <button onclick="sendMessage()">Gửi</button>
+        </div>
+    </div>
+
+    <div id="diagram-section">
+        <div id="canvas-container">
+            <img id="diagram-img" src="" alt="Diagram">
+            <div id="bounding-box" class="bounding-box"></div>
+        </div>
+    </div>
+
+    <script>
+        const messagesDiv = document.getElementById('messages');
+        const inputField = document.getElementById('user-input');
+        const diagramImg = document.getElementById('diagram-img');
+        const boundingBox = document.getElementById('bounding-box');
+
+        inputField.addEventListener("keypress", function(event) {
+            if (event.key === "Enter") {
+                event.preventDefault();
+                sendMessage();
+            }
+        });
+
+        async function sendMessage() {
+            const text = inputField.value.trim();
+            if(!text) return;
+            
+            // Add user msg
+            appendMessage(text, 'user-msg');
+            inputField.value = '';
+
+            // Add loading
+            const loadingId = appendMessage('Đang suy nghĩ...', 'bot-msg loading');
+
+            try {
+                const response = await fetch('/api/v1/troubleshoot', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ fault_signal: text })
+                });
+                const data = await response.json();
+                
+                document.getElementById(loadingId).remove();
+
+                if(data.status === 'success' && data.data) {
+                    const ans = data.data;
+                    let reply = `<b>Lỗi:</b> ${ans.fault_name}<br>`;
+                    
+                    if(ans.possible_causes && ans.possible_causes.length > 0) {
+                        reply += `<b>Nguyên nhân/Thông tin:</b><br>- ${ans.possible_causes.join('<br>- ')}<br>`;
+                    }
+                    if(ans.recommended_actions && ans.recommended_actions.length > 0) {
+                        reply += `<b>Khắc phục:</b><br>- ${ans.recommended_actions.join('<br>- ')}<br>`;
+                    }
+                    if(ans.relevant_drawings) {
+                        reply += `<b>Sơ đồ liên quan:</b> ${ans.relevant_drawings}`;
+                    }
+
+                    appendMessage(reply, 'bot-msg');
+
+                    // Handle visual diagram
+                    if(ans.diagram_url) {
+                        diagramImg.src = ans.diagram_url;
+                        diagramImg.style.display = 'block';
+                        
+                        diagramImg.onload = function() {
+                            if(ans.highlight_coordinates && ans.highlight_coordinates.length === 4) {
+                                const [x, y, w, h] = ans.highlight_coordinates;
+                                // Canh lai ty le neu hinh anh bi scale tren trinh duyet
+                                const scaleX = diagramImg.clientWidth / diagramImg.naturalWidth;
+                                const scaleY = diagramImg.clientHeight / diagramImg.naturalHeight;
+                                
+                                boundingBox.style.left = (x * scaleX) + 'px';
+                                boundingBox.style.top = (y * scaleY) + 'px';
+                                boundingBox.style.width = (w * scaleX) + 'px';
+                                boundingBox.style.height = (h * scaleY) + 'px';
+                                boundingBox.style.display = 'block';
+                            } else {
+                                boundingBox.style.display = 'none';
+                            }
+                        }
+                    } else {
+                        diagramImg.style.display = 'none';
+                        boundingBox.style.display = 'none';
+                    }
+                } else {
+                    appendMessage("Có lỗi xảy ra khi gọi API.", 'bot-msg');
+                }
+            } catch (e) {
+                document.getElementById(loadingId).remove();
+                appendMessage("Lỗi kết nối Server.", 'bot-msg');
+            }
+        }
+
+        function appendMessage(htmlContent, className) {
+            const div = document.createElement('div');
+            div.className = `msg ${className}`;
+            div.innerHTML = htmlContent;
+            div.id = 'msg-' + Date.now();
+            messagesDiv.appendChild(div);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            return div.id;
+        }
+    </script>
+</body>
+</html>

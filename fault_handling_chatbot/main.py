@@ -1,32 +1,36 @@
-import os
-
-from dotenv import load_dotenv
-load_dotenv()
-
 import json
-import logging
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from langchain_community.vectorstores import Chroma
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_classic.chains import create_retrieval_chain
-from langchain_classic.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
 
-# Cấu hình logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+def format_docs(docs):
+    return "\n\n".join(doc.page_content for doc in docs)
 
-# Lấy API Key từ biến môi trường (Ví dụ từ file .env)
-api_key = os.environ.get("GOOGLE_API_KEY")
-if not api_key:
-    logger.warning("GOOGLE_API_KEY không được tìm thấy. Vui lòng thiết lập biến môi trường!")
-else:
-    os.environ["GOOGLE_API_KEY"] = api_key
+def create_lcel_retrieval_chain(retriever, llm, prompt):
+    return (
+        RunnablePassthrough.assign(
+            context=(lambda x: x["input"]) | retriever
+        )
+        | RunnablePassthrough.assign(
+            answer=(
+                RunnablePassthrough.assign(context=lambda x: format_docs(x["context"]))
+                | prompt
+                | llm
+                | StrOutputParser()
+            )
+        )
+    )
+from local_data_service import get_latest_device_data
 
-app = FastAPI(title="Fault Handling AI Assistant API")
+from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI(title="Local AI Fault Handling Core")
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,112 +38,224 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-)
+)# 1. Mở kết nối thư mục static để Frontend có thể lấy ảnh sơ đồ
+import os
+if not os.path.exists("static/images"):
+    os.makedirs("static/images")
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Biến toàn cục để lưu trữ RAG chain
-rag_chain = None
+# 2. Khởi tạo Embeddings và LLM (Chạy Local 100%)
+embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+vector_db = Chroma(persist_directory="./chroma_db_v2", embedding_function=embeddings)
+retriever = vector_db.as_retriever(search_kwargs={"k": 3})
 
-def init_rag_chain():
-    global rag_chain
-    try:
-        # Dùng HuggingFace Embeddings cho đồng bộ với file ingest
-        embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-        # Kiểm tra xem thư mục ChromaDB đã tồn tại chưa
-        if not os.path.exists("./chroma_db"):
-            logger.warning("Thư mục ./chroma_db không tồn tại. Vui lòng chạy file ingest_data.py trước!")
-            return False
+# Gọi model qwen2.5:3b từ Ollama, temperature thấp để xuất JSON chuẩn
+llm = ChatOllama(model="qwen2.5:3b", temperature=0.1)
 
-        vector_db = Chroma(persist_directory="./chroma_db", embedding_function=embeddings)
-        retriever = vector_db.as_retriever(search_kwargs={"k": 5}) # Lấy 5 đoạn text liên quan nhất để có context tốt hơn
-
-        # Dùng Google Gemini Flash (Miễn phí), để temperature = 0 cho câu trả lời bám sát kỹ thuật
-        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.0)
-
-        # Xây dựng Prompt ép kiểu JSON đầu ra
-        system_prompt = (
-            "You are an expert AI assistant for fault handling in electrical and mechanical systems. "
-            "Use the provided retrieved context to answer the user's fault query.\n"
-            "You MUST extract the information and return ONLY a valid JSON object with the exact following keys:\n"
-            "- 'fault_name': The exact name of the fault.\n"
-            "- 'possible_causes': A list of strings detailing possible causes.\n"
-            "- 'recommended_actions': A list of strings detailing corrective troubleshooting actions.\n"
-            "- 'relevant_drawings': A string describing the related circuit diagrams or manual references, including the document name (e.g., from 'source_file' metadata or the text itself).\n\n"
-            "If the information is not found in the context, output empty lists or 'Not found' for the respective fields. DO NOT hallucinate.\n\n"
-            "Context:\n{context}"
-        )
-
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", system_prompt),
-            ("human", "{input}"),
-        ])
-
-        # Tạo RAG Pipeline
-        question_answer_chain = create_stuff_documents_chain(llm, prompt)
-        rag_chain = create_retrieval_chain(retriever, question_answer_chain)
-        logger.info("Khởi tạo RAG Chain thành công!")
-        return True
-    except Exception as e:
-        logger.error(f"Lỗi khi khởi tạo RAG Chain: {e}")
-        return False
-
-# Định nghĩa cấu trúc request đầu vào
-class QueryRequest(BaseModel):
+# ---------------------------------------------------------
+# CẤU TRÚC REQUEST
+# ---------------------------------------------------------
+class FaultRequest(BaseModel):
     fault_signal: str
 
-@app.on_event("startup")
-async def startup_event():
-    init_rag_chain()
+class TrainingRequest(BaseModel):
+    scenario_topic: str
 
-@app.get("/")
-def read_root():
-    return {"message": "Welcome to the Fault Handling AI Assistant API", "status": "running"}
+# ---------------------------------------------------------
+# API 1: TROUBLESHOOTING MODE (XỬ LÝ LỖI)
+# ---------------------------------------------------------
+troubleshoot_prompt = ChatPromptTemplate.from_messages([
+    ("system", 
+     "You are an expert technical assistant. Use the retrieved context to answer the fault query.\n"
+     "You MUST return ONLY a valid JSON object with the following keys. Do not add markdown blocks like ```json:\n"
+     "- 'fault_name': string\n"
+     "- 'possible_causes': list of strings\n"
+     "- 'recommended_actions': list of strings\n"
+     "Context:\n{context}"),
+    ("human", "Fault signal/query: {input}")
+])
 
-# Endpoint xử lý lỗi
-@app.post("/api/v1/fault-handling")
-async def handle_fault(request: QueryRequest):
-    if rag_chain is None:
-        # Thử khởi tạo lại
-        if not init_rag_chain():
-            raise HTTPException(status_code=503, detail="Hệ thống AI chưa sẵn sàng. Vui lòng kiểm tra Vector DB hoặc API Key.")
+troubleshoot_chain = create_lcel_retrieval_chain(retriever, llm, troubleshoot_prompt)
 
+@app.post("/api/v1/troubleshoot")
+async def handle_fault(request: FaultRequest):
     try:
-        # Chạy pipeline RAG
-        logger.info(f"Đang xử lý tín hiệu lỗi: {request.fault_signal}")
-        response = rag_chain.invoke({"input": request.fault_signal})
+        response = troubleshoot_chain.invoke({"input": request.fault_signal})
         
-        # LLM trả về một chuỗi dạng JSON, ta parse nó thành dict của Python
-        raw_answer = response["answer"]
-        
-        # Xóa markdown json block nếu LLM sinh ra (VD: ```json ... ```)
-        raw_answer = raw_answer.strip()
+        # Parse JSON từ câu trả lời của LLM
+        raw_answer = response["answer"].strip()
         if raw_answer.startswith("```json"):
-            raw_answer = raw_answer[7:]
-        if raw_answer.endswith("```"):
-            raw_answer = raw_answer[:-3]
-        raw_answer = raw_answer.strip()
+            raw_answer = raw_answer.replace("```json", "").replace("```", "").strip()
             
-        try:
-            ai_response_json = json.loads(raw_answer)
-        except json.JSONDecodeError:
-            logger.error(f"Lỗi parse JSON. LLM Response: {raw_answer}")
-            # Xử lý fallback nếu LLM không trả về JSON chuẩn
-            ai_response_json = {
-                "fault_name": request.fault_signal,
-                "possible_causes": ["Could not parse LLM response as JSON."],
-                "recommended_actions": [],
-                "relevant_drawings": "Unknown",
-                "raw_response": raw_answer
-            }
+        result_json = json.loads(raw_answer)
+        
+        # Gắn thêm link ảnh sơ đồ mạch từ metadata của tài liệu tìm được
+        diagram_urls = list(set([doc.metadata.get("diagram_image_url") for doc in response["context"] if "diagram_image_url" in doc.metadata]))
+        result_json["relevant_drawings"] = diagram_urls
 
-        # Format lại metadata
-        sources = list(set([doc.metadata.get("source_file", "Unknown") for doc in response["context"]]))
-
-        # Trả về kết quả hoàn chỉnh
-        return {
-            "status": "success",
-            "data": ai_response_json,
-            "sources": sources
-        }
+        return {"status": "success", "data": result_json}
     except Exception as e:
-        logger.error(f"Lỗi xử lý request: {e}")
+        raise HTTPException(status_code=500, detail=f"LLM Error or JSON Parsing failed: {str(e)}")
+
+# ---------------------------------------------------------
+# API 2: TRAINING MODE (TẠO CÂU HỎI MÔ PHỎNG)
+# ---------------------------------------------------------
+training_prompt = ChatPromptTemplate.from_messages([
+    ("system", 
+     "You are an examiner generating technical test scenarios for engineers. "
+     "Based on the context, generate a realistic fault scenario.\n"
+     "Return ONLY a valid JSON object with keys:\n"
+     "- 'scenario_question': A detailed hypothetical fault situation.\n"
+     "- 'expected_answer': A list of correct steps to resolve it.\n"
+     "Context:\n{context}"),
+    ("human", "Topic: {input}")
+])
+
+training_chain = create_lcel_retrieval_chain(retriever, llm, training_prompt)
+
+@app.post("/api/v1/training/generate-scenario")
+async def generate_training_scenario(request: TrainingRequest):
+    try:
+        response = training_chain.invoke({"input": request.scenario_topic})
+        
+        raw_answer = response["answer"].strip()
+        if raw_answer.startswith("```json"):
+            raw_answer = raw_answer.replace("```json", "").replace("```", "").strip()
+            
+        result_json = json.loads(raw_answer)
+        return {"status": "success", "data": result_json}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ---------------------------------------------------------
+# COPILOT REQUEST MODELS
+# ---------------------------------------------------------
+from typing import Optional
+
+class ExplainDecisionRequest(BaseModel):
+    decision_event: str
+    simulation_logs: Optional[str] = None
+
+class RealtimeAlertRequest(BaseModel):
+    alert_condition: str
+    current_metrics: Optional[dict] = None
+
+class LiveTrainingRequest(BaseModel):
+    current_metrics: Optional[dict] = None
+
+# ---------------------------------------------------------
+# API 3: EXPLAIN DECISION (Giải thích quyết định của Rule Engine)
+# ---------------------------------------------------------
+explain_prompt = ChatPromptTemplate.from_messages([
+    ("system", 
+     "You are a Copilot assistant analyzing a Rule Engine decision in a PV-BESS system.\n"
+     "Use the provided context (Rules) and the simulation logs to explain the decision.\n"
+     "Return ONLY a valid JSON object with keys:\n"
+     "- 'decision': string (the decision being explained)\n"
+     "- 'explanation': string (detailed explanation based on logs and rules)\n"
+     "Context:\n{context}\n\nSimulation Logs:\n{simulation_logs}"),
+    ("human", "Decision to explain: {input}")
+])
+
+explain_chain = create_lcel_retrieval_chain(retriever, llm, explain_prompt)
+
+@app.post("/api/v1/copilot/explain-decision")
+async def explain_decision(request: ExplainDecisionRequest):
+    try:
+        # Lấy dữ liệu mô phỏng thật từ local_data_service nếu không truyền vào
+        logs = request.simulation_logs if request.simulation_logs else get_latest_device_data()
+        
+        response = explain_chain.invoke({
+            "input": request.decision_event,
+            "simulation_logs": logs
+        })
+        
+        raw_answer = response["answer"].strip()
+        if raw_answer.startswith("```json"):
+            raw_answer = raw_answer.replace("```json", "").replace("```", "").strip()
+            
+        result_json = json.loads(raw_answer)
+        return {"status": "success", "data": result_json}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ---------------------------------------------------------
+# API 4: REAL-TIME ALERT (Cảnh báo theo thời gian thực)
+# ---------------------------------------------------------
+alert_prompt = ChatPromptTemplate.from_messages([
+    ("system", 
+     "You are a Real-time Alert system for a PV-BESS plant. A critical condition has occurred.\n"
+     "Based on the context, provide an alert message and recommended actions.\n"
+     "Return ONLY a valid JSON object with keys:\n"
+     "- 'alert_message': string (the warning to display)\n"
+     "- 'recommended_actions': list of strings\n"
+     "Context:\n{context}\n\nCurrent Metrics:\n{current_metrics}"),
+    ("human", "Alert condition: {input}")
+])
+
+alert_chain = create_lcel_retrieval_chain(retriever, llm, alert_prompt)
+
+@app.post("/api/v1/copilot/realtime-alert")
+async def realtime_alert(request: RealtimeAlertRequest):
+    try:
+        if request.current_metrics:
+            metrics_str = json.dumps(request.current_metrics)
+        else:
+            # Tự động truy xuất dữ liệu Inverter hiện tại để cảnh báo
+            metrics_str = get_latest_device_data()
+            
+        response = alert_chain.invoke({
+            "input": request.alert_condition,
+            "current_metrics": metrics_str
+        })
+        
+        raw_answer = response["answer"].strip()
+        if raw_answer.startswith("```json"):
+            raw_answer = raw_answer.replace("```json", "").replace("```", "").strip()
+            
+        result_json = json.loads(raw_answer)
+        
+        # Gắn thêm link ảnh sơ đồ mạch
+        diagram_urls = list(set([doc.metadata.get("diagram_image_url") for doc in response["context"] if "diagram_image_url" in doc.metadata]))
+        result_json["relevant_drawings"] = diagram_urls
+        
+        return {"status": "success", "data": result_json}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ---------------------------------------------------------
+# API 5: LIVE TRAINING MODE (Đào tạo thực chiến)
+# ---------------------------------------------------------
+live_training_prompt = ChatPromptTemplate.from_messages([
+    ("system", 
+     "You are an examiner training engineers on a live PV-BESS system.\n"
+     "Using the real-time simulation metrics, ask a 'What if' question to test their understanding.\n"
+     "Return ONLY a valid JSON object with keys:\n"
+     "- 'current_state_summary': string\n"
+     "- 'what_if_question': string (the question to ask the trainee)\n"
+     "- 'expected_answer_hints': list of strings (hints for the correct logic based on context)\n"
+     "Context:\n{context}"),
+    ("human", "Current Metrics: {input}")
+])
+
+live_training_chain = create_lcel_retrieval_chain(retriever, llm, live_training_prompt)
+
+@app.post("/api/v1/copilot/live-training")
+async def live_training(request: LiveTrainingRequest):
+    try:
+        if request.current_metrics:
+            metrics_str = json.dumps(request.current_metrics)
+        else:
+            # Lấy data mô phỏng (Inverter) mới nhất để hỏi "What If"
+            metrics_str = get_latest_device_data()
+            
+        response = live_training_chain.invoke({"input": metrics_str})
+        
+        raw_answer = response["answer"].strip()
+        if raw_answer.startswith("```json"):
+            raw_answer = raw_answer.replace("```json", "").replace("```", "").strip()
+            
+        result_json = json.loads(raw_answer)
+        return {"status": "success", "data": result_json}
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
