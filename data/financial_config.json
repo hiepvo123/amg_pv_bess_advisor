@@ -11,15 +11,15 @@
     "loan_interest_rate": 0.08,
     "loan_term": 20,
 
-    "tax_rate": 0.20,
+    "tax_rate": 0.085,
     "inflation_rate": 0.025,
 
-    "price_growth_rate": 0.02,
+    "price_growth_rate": 0,
 
     "pv_degradation_rate": 0.005,
     "battery_degradation_rate": 0.02,
 
-    "battery_replacement_cost": 75000000000,
+    "battery_replacement_cost": 100672000000,
     "battery_replacement_year": 10,
 
     "inverter_replacement_cost": 20000000000,

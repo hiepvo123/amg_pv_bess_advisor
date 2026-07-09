@@ -17,8 +17,17 @@ class FinancialModel:
         pv_opex,
         bess_opex,
 
-        discount_rate,
-        project_life,
+        insurance_cost = 0,
+
+        property_tax=0,
+
+        land_lease_cost=0,
+
+        variable_opex_rate=0,
+        
+        discount_rate = 0,
+        
+        project_life = 20,
 
         pv_result=None,
         bess_result=None,
@@ -33,7 +42,7 @@ class FinancialModel:
         inverter_replacement_year=12,
 
         price_growth_rate=0.0,
-        opex_growth_rate=0.02,
+        opex_growth_rate=0.025,
 
         pv_degradation_rate=0.005,
 
@@ -43,7 +52,7 @@ class FinancialModel:
         loan_interest_rate=0.08,
         loan_term=20,
 
-        tax_rate=0.20,
+        tax_rate=0.0825,
 
         inflation_rate=0.025,
 
@@ -52,7 +61,8 @@ class FinancialModel:
 
         annual_revenue=None,
         
-        electricity_price=None
+        electricity_price=None,
+        
 
     ):
 
@@ -62,14 +72,12 @@ class FinancialModel:
 
         self.pv_capex = pv_capex or 0
         self.bess_capex = bess_capex or 0
-        self.inverter_capex = inverter_capex or 0
-        self.other_capex = other_capex or 0
+        self.inverter_capex = inverter_capex
+        self.other_capex = other_capex
 
         self.capex = (
             self.pv_capex
             + self.bess_capex
-            + self.inverter_capex
-            + self.other_capex
         )
 
         # -----------------------
@@ -85,7 +93,6 @@ class FinancialModel:
         # -----------------------
         # Energy
         # -----------------------
-        self.initialize_energy_inputs()
 
         # -----------------------
         # Project
@@ -109,7 +116,7 @@ class FinancialModel:
 
         self.pv_degradation_rate = pv_degradation_rate
         self.battery_degradation_rate = battery_degradation_rate
-        self.tax_loss_balance = 0
+        tax_loss_balance = 0
         # -----------------------
         # Replacement
         # -----------------------
@@ -138,26 +145,39 @@ class FinancialModel:
 
         self.depreciation_method = depreciation_method
         self.depreciation_years = depreciation_years
+        
+      
+        self.electricity_price = electricity_price
+        self.replacement_depreciation = {}
+        
+        self.insurance_cost = insurance_cost
 
+        self.property_tax = property_tax
+
+        self.land_lease_cost = land_lease_cost
+
+        self.variable_opex_rate = variable_opex_rate
+        
         # -----------------------
         # Build schedules
         # -----------------------
-
-        self.loan_schedule = self.build_loan_schedule()
-
+        self.initialize_energy_inputs()
+        self.energy_schedule = self.build_energy_schedule()
         self.validate_inputs()
-        
-        self.depreciation_schedule = (
-            self.build_depreciation_schedule()
-        )
-        
-        self.electricity_price = electricity_price
-        
+        self.loan_schedule = self.build_loan_schedule()
+        self.capex_schedule = self.build_capex_schedule()
+        self.revenue_schedule = self.build_revenue_schedule()
+        self.opex_schedule = self.build_opex_schedule()
+        self.replacement_schedule = self.build_replacement_schedule()
+        self.depreciation_schedule = self.build_depreciation_schedule()
        
     def get_depreciation(self, year):
 
-        return self.depreciation_schedule.get(year, 0)
+        row = self.depreciation_schedule.loc[
+            self.depreciation_schedule["Year"] == year
+        ]
 
+        return row["Total Depreciation (VND)"].iloc[0]
 
     def get_interest_payment(self, year):
 
@@ -172,57 +192,306 @@ class FinancialModel:
 
         return 0
     
+    def get_exported_energy_for_year(self, year):
+        """
+        Net exported electricity after degradation.
+        Returns kWh.
+        """
+
+        if self.pv_energy is None:
+            return 0
+
+        exported = self.pv_energy * 1000
+
+        exported *= (1 - self.pv_degradation_rate) ** (year - 1)
+
+        return exported
+    
+    
     def get_revenue_for_year(self, year):
-        energy = self.get_pv_energy_for_year(year)
 
-        revenue = energy * 1000 * self.electricity_price
-
-        revenue *= ((1 + self.price_growth_rate) ** (year - 1))
-
-        return revenue
+        return self.revenue_schedule.loc[
+            self.revenue_schedule["Year"] == year,
+            "Revenue (VND)"
+        ].iloc[0]
 
     def get_opex_for_year(self, year):
+
+        return self.opex_schedule.loc[
+            self.opex_schedule["Year"] == year,
+            "Total O&M (VND)"
+        ].iloc[0]
+
+    def get_pv_energy_for_year(self, year):
         """
-        Annual OPEX after escalation.
+        PV energy (kWh) for a given year, after degradation.
+        Used by build_opex_schedule() for variable O&M.
         """
 
-        growth = (
-            (1 + self.opex_growth_rate)
-            ** (year - 1)
-        )
+        return self.energy_schedule.loc[
+            self.energy_schedule["Year"] == year,
+            "PV Energy (kWh)"
+        ].iloc[0]
+        
+        
+    #SCHEDULE
+    
+    def build_capex_schedule(self):
+        """
+        Build capital cost breakdown similar to SAM.
+        """
 
-        return (
-            self.pv_opex
-            + self.bess_opex
-    ) * growth
-        
-        
+        rows = []
+
+        rows.append({
+            "Component": "PV Modules",
+            "Cost (VND)": self.pv_capex
+        })
+
+        rows.append({
+            "Component": "Battery System",
+            "Cost (VND)": self.bess_capex
+        })
+
+        rows.append({
+            "Component": "Inverter",
+            "Cost (VND)": self.inverter_capex
+        })
+
+        rows.append({
+            "Component": "Other BOS",
+            "Cost (VND)": self.other_capex
+        })
+
+        rows.append({
+            "Component": "Total Installed Cost",
+            "Cost (VND)": self.capex
+        })
+
+        rows.append({
+            "Component": "Debt",
+            "Cost (VND)": self.capex * self.loan_fraction
+        })
+
+        rows.append({
+            "Component": "Equity",
+            "Cost (VND)": self.capex * (1-self.loan_fraction)
+        })
+
+        return pd.DataFrame(rows)
+    
+    
+    def build_energy_schedule(self):
+        """
+        Annual PV/BESS energy schedule.
+
+        This schedule is the source for:
+            - Revenue Schedule
+            - LCOE
+            - LCOS
+            - Cash Flow
+        """
+
+        rows = []
+
+        for year in range(1, self.life + 1):
+
+            # -------------------------
+            # PV degradation
+            # -------------------------
+
+            pv_energy = (
+                self.pv_energy
+                *
+                (
+                    (1 - self.pv_degradation_rate)
+                    ** (year - 1)
+                )
+            )
+
+            # -------------------------
+            # Battery degradation
+            # -------------------------
+
+            bess_energy = (
+                self.bess_energy
+                *
+                (
+                    (1 - self.battery_degradation_rate)
+                    ** (year - 1)
+                )
+            )
+
+            total_energy = (
+                pv_energy
+                + bess_energy
+            )
+
+            rows.append({
+
+                "Year": year,
+
+                "PV Energy (kWh)": pv_energy,
+
+                "BESS Energy (kWh)": bess_energy,
+
+                "Total Energy (kWh)": total_energy
+
+            })
+
+        return pd.DataFrame(rows)
+    
+    def build_revenue_schedule(self):
+        """
+        Build annual electricity revenue schedule.
+        Similar to SAM Revenue table.
+
+        Revenue is earned on total energy delivered to the offtaker,
+        i.e. PV energy exported directly PLUS BESS energy discharged
+        (both already after degradation, from energy_schedule's
+        "Total Energy (kWh)" column). Using PV energy alone would
+        silently drop all BESS-sourced revenue whenever a battery is
+        present -- see build_energy_schedule()'s docstring, which
+        already documents "Total Energy" as the intended source for
+        this schedule.
+        """
+
+        rows = []
+
+        for year in range(1, self.life + 1):
+
+            row = self.energy_schedule.loc[
+                self.energy_schedule["Year"] == year
+            ].iloc[0]
+
+            pv_energy = row["PV Energy (kWh)"]
+            bess_energy = row["BESS Energy (kWh)"]
+            energy = row["Total Energy (kWh)"]
+
+            # Electricity price
+            price = (
+                self.electricity_price
+                *
+                (1 + self.price_growth_rate) ** (year - 1)
+            )
+
+            revenue = energy * price
+
+            rows.append({
+
+                "Year": year,
+
+                "PV Energy (kWh)": pv_energy,
+
+                "BESS Energy (kWh)": bess_energy,
+
+                "Total Energy (kWh)": energy,
+
+                "Electricity Price (VND/kWh)": price,
+
+                "Revenue (VND)": revenue
+
+            })
+
+        return pd.DataFrame(rows)
+    
+    def build_opex_schedule(self):
+        """
+        Build annual operating cost schedule.
+        Similar to SAM Operating Expenses table.
+        """
+
+        rows = []
+
+        for year in range(1, self.life + 1):
+
+            growth = (
+                1 + self.opex_growth_rate
+            ) ** (year - 1)
+
+            fixed_pv = self.pv_opex * growth
+
+            fixed_bess = self.bess_opex * growth
+
+            insurance = self.insurance_cost * growth
+
+            property_tax = self.property_tax * growth
+
+            land_lease = self.land_lease_cost * growth
+
+            variable = (
+                self.variable_opex_rate
+                * self.get_pv_energy_for_year(year)
+            )
+
+            total = (
+
+                fixed_pv
+
+                + fixed_bess
+
+                + insurance
+
+                + property_tax
+
+                + land_lease
+
+                + variable
+
+            )
+
+            rows.append({
+
+                "Year": year,
+
+                "PV O&M (VND)": fixed_pv,
+
+                "BESS O&M (VND)": fixed_bess,
+
+                "Insurance (VND)": insurance,
+
+                "Property Tax (VND)": property_tax,
+
+                "Land Lease (VND)": land_lease,
+
+                "Variable O&M (VND)": variable,
+
+                "Total O&M (VND)": total
+
+            })
+
+        return pd.DataFrame(rows)
+    
     def build_depreciation_schedule(self):
         """
-        Build annual depreciation schedule.
-        Supports:
-            - Straight Line (SL)
-            - MACRS 5-year
+        Build depreciation schedule similar to NREL SAM.
+
+        Includes:
+            - Base system depreciation
+            - Battery replacement depreciation
+            - Inverter replacement depreciation
+            - Book value
         """
 
-        schedule = {}
+        rows = []
 
-        # Straight Line
+        asset_value = self.capex
+
+        accumulated = 0
+
+        # --------------------------
+        # Base depreciation rates
+        # --------------------------
+
         if self.depreciation_method.upper() == "SL":
 
-            depreciable_basis = self.capex - self.salvage_value
+            base_rate = 1 / self.depreciation_years
 
-            for year in range(1, self.life + 1):
+            base_rates = [base_rate] * self.depreciation_years
 
-                if year <= self.depreciation_years:
-                    schedule[year] = depreciable_basis
-                else:
-                    schedule[year] = 0
-
-        # MACRS 5-year
         elif self.depreciation_method.upper() == "MACRS":
 
-            rates = [
+            base_rates = [
                 0.20,
                 0.32,
                 0.192,
@@ -231,19 +500,189 @@ class FinancialModel:
                 0.0576
             ]
 
-            for year in range(1, self.life + 1):
-
-                if year <= len(rates):
-                    schedule[year] = self.capex * rates[year - 1]
-                else:
-                    schedule[year] = 0
-
         else:
+
             raise ValueError(
-                "Depreciation method must be 'SL' or 'MACRS'"
+                "Unknown depreciation method."
             )
 
-        return schedule
+        # --------------------------
+        # Build year by year
+        # --------------------------
+
+        for year in range(1, self.life + 1):
+
+            # --------------------------
+            # Base depreciation
+            # --------------------------
+
+            if year <= len(base_rates):
+
+                base_dep = asset_value * base_rates[year - 1]
+
+                dep_rate = base_rates[year - 1] * 100
+
+            else:
+
+                base_dep = 0
+
+                dep_rate = 0
+
+            # --------------------------
+            # Battery depreciation
+            # --------------------------
+            
+            battery_dep = 0
+
+            for _, row in self.replacement_schedule.iterrows():
+
+                install_year = row["Year"]
+
+                replacement_cost = row["Battery Replacement (VND)"]
+
+                if replacement_cost == 0:
+                    continue
+
+                age = year - install_year
+
+                if 0 <= age < self.depreciation_years:
+
+                    battery_dep += (
+                        row["Battery Replacement (VND)"]
+                        /
+                        self.depreciation_years
+                    )
+
+            # --------------------------
+            # Inverter depreciation
+            # --------------------------
+
+            inverter_dep = 0
+
+            for _, row in self.replacement_schedule.iterrows():
+
+                install_year = row["Year"]
+
+                replacement_cost = row["Inverter Replacement (VND)"]
+
+                if replacement_cost == 0:
+                    continue
+
+                age = year - install_year
+
+                if 0 <= age < self.depreciation_years:
+
+                    inverter_dep += (
+
+                        replacement_cost
+
+                        / self.depreciation_years
+
+                    )
+
+            # --------------------------
+            # Total
+            # --------------------------
+
+            total_dep = (
+
+                base_dep
+
+                + battery_dep
+
+                + inverter_dep
+
+            )
+
+            accumulated += total_dep
+
+            book_value = max(
+
+                asset_value
+                + self.battery_replacement_cost
+                + self.inverter_replacement_cost
+                - accumulated,
+
+                0
+
+            )
+
+            rows.append({
+
+                "Year": year,
+
+                "Depreciation Rate (%)": dep_rate,
+
+                "Asset Value (VND)": asset_value,
+
+                "Base Depreciation (VND)": base_dep,
+
+                "Battery Depreciation (VND)": battery_dep,
+
+                "Inverter Depreciation (VND)": inverter_dep,
+
+                "Total Depreciation (VND)": total_dep,
+
+                "Accumulated Depreciation (VND)": accumulated,
+
+                "Book Value (VND)": book_value
+
+            })
+
+        return pd.DataFrame(rows)
+    
+    def build_replacement_schedule(self):
+        """
+        Build replacement schedule.
+
+        Similar to SAM's Replacement Costs table.
+        """
+
+        rows = []
+
+        for year in range(1, self.life + 1):
+
+            battery_cost = 0
+
+            inverter_cost = 0
+
+            if year == self.battery_replacement_year:
+
+                battery_cost = self.battery_replacement_cost
+
+            if year == self.inverter_replacement_year:
+
+                inverter_cost = self.inverter_replacement_cost
+
+            total = (
+
+                battery_cost
+
+                + inverter_cost
+
+            )
+
+            rows.append({
+
+                "Year": year,
+
+                "Battery Replacement (VND)": battery_cost,
+
+                "Inverter Replacement (VND)": inverter_cost,
+
+                "Total Replacement (VND)": total,
+                
+                "Battery Depreciation Start": (
+                    year if battery_cost > 0 else None
+                ),
+
+                "Inverter Depreciation Start": (
+                    year if inverter_cost > 0 else None
+                )
+
+            })
+
+        return pd.DataFrame(rows)
     
     def build_loan_schedule(self):
         """
@@ -286,21 +725,44 @@ class FinancialModel:
             }
 
         return schedule
-
-    def get_pv_energy_for_year(self, year):
-        """
-        PV energy after degradation.
-        """
-
-        if self.pv_energy is None:
-            return None
-
-        return (
-            self.pv_energy *
-            ((1 - self.pv_degradation_rate) ** (year - 1))
-        )
     
     #HELPER FUNCTION
+    
+    def get_replacement_depreciation(self, year):
+        """
+        Depreciation from replacement assets (battery/inverter).
+        Straight-line over remaining depreciation life.
+        """
+
+        depreciation = 0
+
+        for start_year, annual_dep, years_left in self.replacement_depreciation.values():
+
+            if start_year <= year < start_year + years_left:
+                depreciation += annual_dep
+
+        return depreciation
+    
+    @staticmethod
+    def _infer_interval_hours(df, datetime_col="datetime", default_hours=0.5):
+        """
+        Infer the simulation timestep (in hours) from a datetime column,
+        so power series (MW/kW) can be converted to energy without
+        assuming a fixed 30-minute resolution. The assignment allows
+        5/15/30-minute or 1-hour timesteps, so this must not be hardcoded.
+        Falls back to `default_hours` if there is no usable timestamp.
+        """
+        if datetime_col not in df.columns or len(df) < 2:
+            return default_hours
+
+        ts = pd.to_datetime(df[datetime_col]).sort_values()
+        diffs = ts.diff().dropna().dt.total_seconds() / 3600.0
+
+        if diffs.empty:
+            return default_hours
+
+        return diffs.median()
+
     def initialize_energy_inputs(self):
         """
         Calculate annualized energy from PV/BESS simulation results.
@@ -317,9 +779,12 @@ class FinancialModel:
                     "pv_result must contain column 'pv_power_calc'"
                 )
 
-            simulated_energy = (
-                self.pv_result["pv_power_calc"].sum() * 0.5
-            )  # MW × 0.5h = MWh
+            interval_hours = self._infer_interval_hours(self.pv_result)
+
+            dataset_energy_mwh = (
+                self.pv_result["pv_power_calc"].sum()
+                * interval_hours
+            )
 
             if "date" in self.pv_result.columns:
                 days = self.pv_result["date"].nunique()
@@ -330,7 +795,12 @@ class FinancialModel:
                 )
 
             annual_factor = 365 / days
-            self.pv_energy = simulated_energy * annual_factor
+
+            self.pv_energy = (
+                dataset_energy_mwh
+                * annual_factor
+                * 1000
+            )
 
         else:
             self.pv_energy = 0
@@ -349,6 +819,21 @@ class FinancialModel:
                 self.bess_result["energy_out_kwh"].sum()
             )
 
+            # energy_out_kwh is already energy per interval (not power),
+            # so no interval-hours multiplication is needed here -- only
+            # the day count (for annualization) must be resolution-aware.
+            if "date" in self.bess_result.columns:
+                days = self.bess_result["date"].nunique()
+            elif "datetime" in self.bess_result.columns:
+                days = (
+                    pd.to_datetime(self.bess_result["datetime"])
+                    .dt.date.nunique()
+                )
+            else:
+                # No timestamp column available: fall back to assuming
+                # 30-minute resolution (48 rows/day), same as before.
+                days = len(self.bess_result) / 48
+
             annual_factor = 365 / days
             self.bess_energy = simulated_bess_energy * annual_factor
 
@@ -359,18 +844,19 @@ class FinancialModel:
 
         total = (
         self.pv_capex
-        +
-        self.inverter_capex
-        +
-        self.other_capex
     )
 
         for year in range(1, self.life + 1):
 
-            discount = (1 + self.discount_rate) ** year
+            discount = (1 + self.real_discount_rate) ** year
+
+            # OPEX escalates with opex_growth_rate, same as build_opex_schedule(),
+            # so LCOE stays consistent with the OPEX actually charged in the
+            # cash flow / NPV calculation.
+            opex_growth = (1 + self.opex_growth_rate) ** (year - 1)
 
             total += (
-                self.pv_opex
+                self.pv_opex * opex_growth
                 /
                 discount
             )
@@ -417,8 +903,10 @@ class FinancialModel:
 
             discount = (1 + self.real_discount_rate) ** year
 
+            opex_growth = (1 + self.opex_growth_rate) ** (year - 1)
+
             total += (
-                self.bess_opex
+                self.bess_opex * opex_growth
                 /
                 discount
             )
@@ -432,7 +920,27 @@ class FinancialModel:
                 )
 
         return total
-    
+
+    def present_value_total_opex(self):
+        """
+        NPV of total operating costs (Total O&M, all components) over the
+        project life, discounted at the nominal discount rate -- consistent
+        with how the equity cash flow / project NPV is discounted.
+        Used for the "Lifetime OPEX (NPV)" summary metric.
+        """
+
+        total = 0
+
+        for year in range(1, self.life + 1):
+
+            opex = self.get_opex_for_year(year)
+
+            discount = (1 + self.discount_rate) ** year
+
+            total += opex / discount
+
+        return total
+
     def validate_inputs(self):
 
         assert self.capex > 0
@@ -473,19 +981,11 @@ class FinancialModel:
 
     def get_replacement_cost(self, year):
 
-        cost = 0
+        rows = self.replacement_schedule.loc[
+            self.replacement_schedule["Year"] == year
+        ]
 
-        inflation = (
-            (1 + self.inflation_rate) ** (year - 1)
-        )
-
-        if year == self.battery_replacement_year:
-            cost += self.battery_replacement_cost * inflation
-
-        if year == self.inverter_replacement_year:
-            cost += self.inverter_replacement_cost * inflation
-
-        return cost
+        return rows["Total Replacement (VND)"].iloc[0]
 
 
 #Cash Flow
@@ -495,10 +995,14 @@ class FinancialModel:
         """
 
         rows = []
+        tax_loss_balance = 0
 
         # Initial equity investment
         debt = self.capex * self.loan_fraction
-        equity = self.capex - debt
+        equity = self.capex_schedule.loc[
+            self.capex_schedule["Component"]=="Equity",
+            "Cost (VND)"
+        ].iloc[0]
 
         cumulative = -equity
 
@@ -543,24 +1047,32 @@ class FinancialModel:
         })
 
         for year in range(1,self.life+1):
-
             # ------------------------
             # Energy
             # ------------------------
 
-            energy = self.get_pv_energy_for_year(year)
+            energy = self.energy_schedule.loc[
+                self.energy_schedule["Year"] == year,
+                "Total Energy (kWh)"
+            ].iloc[0]
 
             # ------------------------
             # Revenue
             # ------------------------
 
-            revenue = self.get_revenue_for_year(year)
+            revenue = self.revenue_schedule.loc[
+                self.revenue_schedule["Year"] == year,
+                "Revenue (VND)"
+            ].iloc[0]
 
             # ------------------------
             # Operating Cost
             # ------------------------
 
-            opex = self.get_opex_for_year(year)
+            opex = self.opex_schedule.loc[
+                self.opex_schedule["Year"] == year,
+                "Total O&M (VND)"
+            ].iloc[0]
 
             # ------------------------
             # EBITDA
@@ -572,7 +1084,13 @@ class FinancialModel:
             # Depreciation
             # ------------------------
 
-            depreciation = self.get_depreciation(year)
+            depreciation = (
+                self.depreciation_schedule.loc[
+                    self.depreciation_schedule["Year"] == year,
+                    "Total Depreciation (VND)"
+                ]
+                .iloc[0]
+            )
 
             # ------------------------
             # EBIT
@@ -584,15 +1102,16 @@ class FinancialModel:
             # Financing
             # ------------------------
 
-            interest = self.get_interest_payment(year)
+            loan = self.loan_schedule.get(
+                year,
+                {"interest": 0, "principal": 0, "balance": 0}
+            )
 
-            principal = self.get_principal_payment(year)
+            interest = loan["interest"]
 
-            loan_balance = 0
+            principal = loan["principal"]
 
-            if year in self.loan_schedule:
-
-                loan_balance = self.loan_schedule[year]["balance"]
+            loan_balance = loan["balance"]
                 
             # ------------------------
             # Taxable income
@@ -603,20 +1122,16 @@ class FinancialModel:
                 - interest
             )
 
-            if self.tax_loss_balance > 0:
-                offset = min(taxable_income, self.tax_loss_balance)
+            if tax_loss_balance > 0:
+                offset = min(taxable_income, tax_loss_balance)
                 taxable_income -= offset
-                self.tax_loss_balance -= offset
+                tax_loss_balance -= offset
 
             if taxable_income < 0:
 
-                self.tax_loss_balance = abs(taxable_income)
+                tax_loss_balance += abs(taxable_income)
 
                 taxable_income = 0
-
-            else:
-
-                self.tax_loss_balance = 0
 
             income_tax = (
                 taxable_income
@@ -636,8 +1151,13 @@ class FinancialModel:
             # ------------------------
             # Replacement
             # ------------------------
-
-            replacement = self.get_replacement_cost(year)
+            replacement = (
+                self.replacement_schedule.loc[
+                    self.replacement_schedule["Year"] == year,
+                    "Total Replacement (VND)"
+                ]
+                .iloc[0]
+            )
 
             # ------------------------
             # Salvage
@@ -707,7 +1227,7 @@ class FinancialModel:
 
             discounted_cf = equity_cf * discount
 
-            cumulative += equity_cf
+            cumulative += discounted_cf
 
             rows.append({
 
@@ -767,7 +1287,7 @@ class FinancialModel:
         ].sum()
 
 
-#IRR
+    #IRR
     def calculate_irr(self):
         """
         Internal Rate of Return.
@@ -783,22 +1303,22 @@ class FinancialModel:
 
 #Paypack Period
     def calculate_payback(self):
-
         """
-        Discounted Payback Period (years)
+        Discounted Payback Period
         """
 
-        cash_table = self.calculate_cash_flow()
+        cashflow = self.calculate_cash_flow()
 
-        cumulative = 0
+        cumulative = 0.0
 
-        for year in range(len(cash_table)):
+        for _, row in cashflow.iterrows():
 
-            cf = cash_table.iloc[year]["Equity Cash Flow (VND)"]
+            year = row["Year"]
 
-            discounted_cf = (
-                cf /
-                ((1 + self.discount_rate) ** year)
+            cf = row["Equity Cash Flow (VND)"]
+
+            discounted_cf = cf / (
+                (1 + self.discount_rate) ** year
             )
 
             previous = cumulative
@@ -810,15 +1330,9 @@ class FinancialModel:
                 if year == 0:
                     return 0
 
-                fraction = (
-                    abs(previous)
-                    /
-                    discounted_cf
-                )
-
                 return (
                     (year - 1)
-                    + fraction
+                    + abs(previous) / discounted_cf
                 )
 
         return None
@@ -869,15 +1383,39 @@ class FinancialModel:
 
         return {
 
+            # -----------------------
+            # CAPEX
+            # -----------------------
+
+            "PV CAPEX (VND)": self.pv_capex,
+
+            "BESS CAPEX (VND)": self.bess_capex,
+
             "Total CAPEX (VND)": self.capex,
 
             "Equity Investment (VND)": self.capex * (1-self.loan_fraction),
 
             "Debt Amount (VND)": self.capex * self.loan_fraction,
 
-            "Year 1 Revenue (VND)": self.get_revenue_for_year(1),
+            "Debt Fraction (%)": self.loan_fraction * 100,
+
+            # -----------------------
+            # OPEX
+            # -----------------------
 
             "Year 1 OPEX (VND)": self.get_opex_for_year(1),
+
+            "Lifetime OPEX, NPV (VND)": self.present_value_total_opex(),
+
+            # -----------------------
+            # Revenue (context, not one of the core 7 metrics)
+            # -----------------------
+
+            "Year 1 Revenue (VND)": self.get_revenue_for_year(1),
+
+            # -----------------------
+            # Core financial metrics
+            # -----------------------
 
             "NPV (VND)": self.calculate_npv(),
 
@@ -891,6 +1429,165 @@ class FinancialModel:
 
         }
 
+    def _summary_table_rows(self):
+        """
+        Build (label, value, unit) rows for the SAM-style summary, shared
+        by print_summary() and the "Summary" sheet in export_cashflow_excel().
+        Mirrors the layout of SAM's Single Owner "Metrics" panel where an
+        equivalent value exists (Total capital cost, Equity, Debt, Debt
+        fraction, NPV, IRR, LCOE), plus OPEX, Payback, and LCOS as requested.
+        """
+
+        m = self.calculate_financial_metrics()
+
+        return [
+            ("SYSTEM COSTS", "", ""),
+            ("PV CAPEX", m["PV CAPEX (VND)"], "VND"),
+            ("BESS CAPEX", m["BESS CAPEX (VND)"], "VND"),
+            ("Total capital cost (CAPEX)", m["Total CAPEX (VND)"], "VND"),
+
+            ("FINANCING", "", ""),
+            ("Equity", m["Equity Investment (VND)"], "VND"),
+            ("Size of debt", m["Debt Amount (VND)"], "VND"),
+            ("Debt fraction", m["Debt Fraction (%)"], "%"),
+
+            ("OPERATING COSTS", "", ""),
+            ("Year 1 OPEX", m["Year 1 OPEX (VND)"], "VND"),
+            ("Lifetime OPEX (NPV)", m["Lifetime OPEX, NPV (VND)"], "VND"),
+
+            ("KEY METRICS", "", ""),
+            ("NPV", m["NPV (VND)"], "VND"),
+            ("IRR", m["IRR (%)"], "%"),
+            ("Payback period", m["Payback (Years)"], "years"),
+            ("LCOE, nominal", m["LCOE (VND/kWh)"], "VND/kWh"),
+            ("LCOS, nominal", m["LCOS (VND/kWh)"], "VND/kWh"),
+        ]
+
+    #Print Summary (SAM-style)
+    def print_summary(self):
+        """
+        Print a concise, SAM-style summary of the project's key financial
+        indicators: CAPEX, OPEX, NPV, IRR, Payback, LCOE, LCOS -- similar
+        in spirit to the "Metrics" panel on SAM's Single Owner Inputs sheet.
+        """
+
+        m = self.calculate_financial_metrics()
+
+        def money(x):
+            if x is None:
+                return "N/A"
+            return f"{x:,.0f} VND"
+
+        def per_kwh(x):
+            if x is None:
+                return "N/A"
+            return f"{x:,.2f} VND/kWh"
+
+        def pct(x):
+            if x is None:
+                return "N/A"
+            return f"{x:,.2f} %"
+
+        def years(x):
+            if x is None:
+                return "Not achieved within project life"
+            return f"{x:,.2f} yrs"
+
+        lines = []
+        lines.append("=" * 60)
+        lines.append("FINANCIAL SUMMARY".center(60))
+        lines.append("=" * 60)
+
+        lines.append("")
+        lines.append("SYSTEM COSTS")
+        lines.append(f"  {'PV CAPEX':<28}: {money(m['PV CAPEX (VND)'])}")
+        lines.append(f"  {'BESS CAPEX':<28}: {money(m['BESS CAPEX (VND)'])}")
+        lines.append(f"  {'Total CAPEX':<28}: {money(m['Total CAPEX (VND)'])}")
+
+        lines.append("")
+        lines.append("FINANCING")
+        lines.append(
+            f"  {'Equity Investment':<28}: {money(m['Equity Investment (VND)'])} "
+            f"({100 - m['Debt Fraction (%)']:.1f}%)"
+        )
+        lines.append(
+            f"  {'Debt Amount':<28}: {money(m['Debt Amount (VND)'])} "
+            f"({m['Debt Fraction (%)']:.1f}%)"
+        )
+
+        lines.append("")
+        lines.append("OPERATING COSTS (OPEX)")
+        lines.append(f"  {'Year 1 OPEX':<28}: {money(m['Year 1 OPEX (VND)'])}")
+        lines.append(f"  {'Lifetime OPEX (NPV)':<28}: {money(m['Lifetime OPEX, NPV (VND)'])}")
+
+        lines.append("")
+        lines.append("KEY METRICS")
+        lines.append(f"  {'NPV':<28}: {money(m['NPV (VND)'])}")
+        lines.append(f"  {'IRR':<28}: {pct(m['IRR (%)'])}")
+        lines.append(f"  {'Payback Period':<28}: {years(m['Payback (Years)'])}")
+        lines.append(f"  {'LCOE':<28}: {per_kwh(m['LCOE (VND/kWh)'])}")
+        lines.append(f"  {'LCOS':<28}: {per_kwh(m['LCOS (VND/kWh)'])}")
+
+        lines.append("=" * 60)
+
+        report = "\n".join(lines)
+        print(report)
+
+        return report
+
+    def build_financial_summary(self):
+        """
+        Final financial summary similar to NREL SAM.
+        """
+
+        summary = {
+
+            # ------------------------
+            # Capital Cost
+            # ------------------------
+            "PV CAPEX (VND)": self.pv_capex,
+            "BESS CAPEX (VND)": self.bess_capex,
+            "Inverter CAPEX (VND)": self.inverter_capex,
+            "Other CAPEX (VND)": self.other_capex,
+            "Total CAPEX (VND)": self.capex,
+
+            # ------------------------
+            # OPEX
+            # ------------------------
+            "Year 1 PV OPEX (VND)": self.pv_opex,
+            "Year 1 BESS OPEX (VND)": self.bess_opex,
+            "Year 1 Total OPEX (VND)": self.pv_opex + self.bess_opex,
+
+            # ------------------------
+            # Energy
+            # ------------------------
+            "Year 1 PV Energy (kWh)": self.energy_schedule.iloc[0]["PV Energy (kWh)"],
+            "Year 1 BESS Energy (kWh)": self.energy_schedule.iloc[0]["BESS Energy (kWh)"],
+
+            # ------------------------
+            # Revenue
+            # ------------------------
+            "Year 1 Revenue (VND)": self.revenue_schedule.iloc[0]["Revenue (VND)"],
+
+            # ------------------------
+            # Financing
+            # ------------------------
+            "Debt (VND)": self.capex * self.loan_fraction,
+            "Equity (VND)": self.capex * (1 - self.loan_fraction),
+
+            # ------------------------
+            # Financial Indicators
+            # ------------------------
+            "NPV (VND)": self.calculate_npv(),
+            "IRR (%)": self.calculate_irr() * 100,
+            "Payback (Years)": self.calculate_payback(),
+            "LCOE (VND/kWh)": self.calculate_lcoe(),
+            "LCOS (VND/kWh)": self.calculate_lcos()
+        }
+
+        return pd.Series(summary)
+    
+    
 #Export Result
     def export_cashflow_excel(
         self,
@@ -902,13 +1599,57 @@ class FinancialModel:
 
         table = self.calculate_cash_flow()
 
+        summary_rows = self._summary_table_rows()
+
         with pd.ExcelWriter(filename) as writer:
+
+            pd.DataFrame(
+                summary_rows,
+                columns=["Metric", "Value", "Unit"]
+            ).to_excel(
+
+                writer,
+
+                sheet_name="Summary",
+
+                index=False
+
+            )
 
             table.to_excel(
 
                 writer,
 
                 sheet_name="Cash Flow",
+
+                index=False
+
+            )
+            self.revenue_schedule.to_excel(
+
+                writer,
+
+                sheet_name="Revenue",
+
+                index=False
+
+            )
+            
+            self.opex_schedule.to_excel(
+
+                writer,
+
+                sheet_name="OPEX",
+
+                index=False
+
+            )
+            
+            self.depreciation_schedule.to_excel(
+
+                writer,
+
+                sheet_name="Depreciation",
 
                 index=False
 
@@ -923,6 +1664,17 @@ class FinancialModel:
                 writer,
 
                 sheet_name="Loan Schedule"
+
+            )
+            
+            
+            self.replacement_schedule.to_excel(
+
+                writer,
+
+                sheet_name="Replacement",
+
+                index=False
 
             )
 
