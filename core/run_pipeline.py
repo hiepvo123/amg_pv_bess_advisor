@@ -1,7 +1,7 @@
 """
 Main pipeline orchestrator.
 """
-from core.modeling_section.financial_model import (
+from core.financial_model import (
     FinancialModel,
     load_financial_config
 )
