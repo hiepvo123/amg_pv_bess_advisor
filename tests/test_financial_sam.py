@@ -87,3 +87,11 @@ def test_terminal_proceeds_and_project_cash_flow_are_unlevered(model_kwargs):
     )
     summary = model.calculate_financial_metrics()
     assert {"Total Project Cost (VND)", "Investment Tax Credit (VND)", "Project NPV (VND)"} <= set(summary)
+
+
+def test_excel_export_has_a_dedicated_energy_schedule(model_kwargs, tmp_path):
+    model = FinancialModel(**model_kwargs)
+    workbook_path = tmp_path / "financial_model.xlsx"
+    model.export_cashflow_excel(str(workbook_path))
+
+    assert "Energy" in pd.ExcelFile(workbook_path).sheet_names

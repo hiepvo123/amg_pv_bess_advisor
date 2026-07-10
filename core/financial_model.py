@@ -777,14 +777,17 @@ class FinancialModel:
 
             for _, row in self.replacement_schedule.iterrows():
 
-                install_year = row["Year"]
+                # ``iterrows`` may upcast an otherwise integer Year column
+                # to numpy.float64 when the row also contains float/NaN
+                # fields.  MACRS rates are list-indexed, so normalize it.
+                install_year = int(row["Year"])
 
                 replacement_cost = row["Battery Replacement (VND)"]
 
                 if replacement_cost == 0:
                     continue
 
-                age = year - install_year
+                age = int(year - install_year)
 
                 if 0 <= age < len(base_rates):
                     battery_dep += replacement_cost * base_rates[age]
@@ -797,14 +800,14 @@ class FinancialModel:
 
             for _, row in self.replacement_schedule.iterrows():
 
-                install_year = row["Year"]
+                install_year = int(row["Year"])
 
                 replacement_cost = row["Inverter Replacement (VND)"]
 
                 if replacement_cost == 0:
                     continue
 
-                age = year - install_year
+                age = int(year - install_year)
 
                 if 0 <= age < len(base_rates):
                     inverter_replacement_dep += replacement_cost * base_rates[age]
@@ -1849,6 +1852,15 @@ class FinancialModel:
                 writer,
 
                 sheet_name="CAPEX",
+
+                index=False
+
+            )
+            self.energy_schedule.to_excel(
+
+                writer,
+
+                sheet_name="Energy",
 
                 index=False
 
