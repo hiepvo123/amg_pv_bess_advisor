@@ -1,26 +1,12 @@
-"""
-Test / demo script for financial_model.py
-
-Since we don't have real PV/BESS simulation output to plug in, this script
-generates synthetic half-hourly PV and BESS profiles for one representative
-year, then runs them through FinancialModel end-to-end: build the project,
-print the SAM-style summary (including DSCR), and export the full cash flow
-workbook + cumulative cash flow chart.
-
-Replace `build_synthetic_pv_result()` / `build_synthetic_bess_result()` with
-your real simulation outputs, and PROJECT_PARAMS below with your real project
-assumptions, when you're ready to run this on an actual project.
-"""
-
-import os
+from pathlib import Path
 import numpy as np
 import pandas as pd
 
 from core.financial_model import FinancialModel
 
-OUTPUT_DIR = "/mnt/user-data/outputs"
-EXCEL_PATH = os.path.join(OUTPUT_DIR, "cashflow_results.xlsx")
-CHART_PATH = os.path.join(OUTPUT_DIR, "figures", "cumulative_cashflow.png")
+OUTPUT_DIR = Path("outputs")
+EXCEL_PATH = OUTPUT_DIR / "cashflow_results.xlsx"
+CHART_PATH = OUTPUT_DIR / "figures" / "cumulative_cashflow.png"
 
 
 # ---------------------------------------------------------------------------
@@ -73,14 +59,25 @@ def build_synthetic_bess_result(days=365, daily_discharge_mwh=2.0, start="2025-0
 
 PROJECT_PARAMS = dict(
     # CAPEX (VND)
-    pv_capex=50_000_000_000,
-    bess_capex=20_000_000_000,
-    inverter_capex=3_000_000_000,
-    other_capex=2_000_000_000,
+    pv_capex=500_000_000_000,
+    bess_capex=180_000_000_000,
+    inverter_capex=40_000_000_000,
+    other_capex=18_532_600_000,
 
     # OPEX (VND, Year 1)
-    pv_opex=500_000_000,
-    bess_opex=200_000_000,
+    pv_capacity_kw = 5000,          # 5 MW PV
+    bess_power_kw = 4000,           # 4 MW BESS
+
+    pv_fixed_om = 0,
+    pv_generation_om = 0,
+
+    battery_fixed_om = 0,
+    battery_generation_om = 0,
+
+    # Convert USD to VND if you're comparing against SAM in VND
+
+    pv_capacity_om = 22 * 26000,     # VND/kW-year
+    battery_capacity_om = 60 * 26000, # VND/kW-year
     insurance_cost=150_000_000,
     property_tax=100_000_000,
     land_lease_cost=300_000_000,
@@ -99,7 +96,7 @@ PROJECT_PARAMS = dict(
     project_life=25,
     pv_degradation_rate=0.005,
     battery_degradation_rate=0.02,
-    salvage_value=5_000_000_000,
+    salvage_value=0,
 
     # Financing
     loan_fraction=0.70,
@@ -130,7 +127,7 @@ PROJECT_PARAMS = dict(
 
 
 def main():
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     pv_result = build_synthetic_pv_result()
     bess_result = build_synthetic_bess_result()

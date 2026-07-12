@@ -25,8 +25,20 @@ class FinancialModel:
         self,
         pv_capex,
 
-        pv_opex,
-        bess_opex,
+        pv_capacity_om,
+        battery_capacity_om,
+
+        pv_fixed_om,
+        battery_fixed_om,
+
+        pv_generation_om,
+        battery_generation_om,
+        
+        pv_capacity_kw,
+        
+        bess_power_kw,
+        
+        
 
         inverter_capex=0,
         other_capex=0,
@@ -41,7 +53,7 @@ class FinancialModel:
         
         discount_rate = 0,
         
-        project_life = 20,
+        project_life = 25,
 
         pv_result=None,
         bess_result=None,
@@ -89,8 +101,27 @@ class FinancialModel:
         
         electricity_price=None,
 
+        # Optional annual schedules exported by SAM.  These let a financial
+        # model use the simulated dispatch result directly instead of
+        # recreating it with a single degradation assumption.
+        annual_pv_energy=None,
+        annual_bess_energy=None,
+        annual_export_energy=None,
+        annual_grid_purchase_cost=None,
+
         construction_period_years=0,
         idc_rate=None,
+        construction_period_months=None,
+        construction_loan_fraction=1.0,
+        construction_upfront_fee_rate=0.0,
+
+        # SAM can allocate the depreciable basis across several classes, e.g.
+        # [(15, 0.50), (20, 0.50)].  Allocations are fractions of tax basis.
+        depreciation_allocations=None,
+        half_year_convention=False,
+        capitalize_construction_financing=False,
+        replacement_depreciation_years=None,
+        replacement_depreciation_method=None,
 
         min_dscr_threshold=1.20,
 
@@ -114,8 +145,19 @@ class FinancialModel:
         # -----------------------
         # OPEX
         # -----------------------
-        self.pv_opex = pv_opex
-        self.bess_opex = bess_opex
+        # PV O&M
+        self.pv_fixed_om = pv_fixed_om                  # VND/year
+        self.pv_capacity_om = pv_capacity_om            # VND/kW-year
+        self.pv_generation_om = pv_generation_om        # VND/MWh
+
+        # Battery O&M
+        self.battery_fixed_om = battery_fixed_om
+        self.battery_capacity_om = battery_capacity_om
+        self.battery_generation_om = battery_generation_om
+
+        # Plant size
+        self.pv_capacity_kw = pv_capacity_kw
+        self.bess_power_kw = bess_power_kw
 
         self.pv_result = pv_result
         self.bess_result = bess_result
@@ -134,6 +176,18 @@ class FinancialModel:
         ) - 1
 
         self.annual_revenue = annual_revenue
+        self.annual_pv_energy = self._annual_series(
+            annual_pv_energy, "annual_pv_energy"
+        )
+        self.annual_bess_energy = self._annual_series(
+            annual_bess_energy, "annual_bess_energy"
+        )
+        self.annual_export_energy = self._annual_series(
+            annual_export_energy, "annual_export_energy"
+        )
+        self.annual_grid_purchase_cost = self._annual_series(
+            annual_grid_purchase_cost, "annual_grid_purchase_cost"
+        )
 
         self.price_growth_rate = price_growth_rate
         self.opex_growth_rate = opex_growth_rate
@@ -192,12 +246,22 @@ class FinancialModel:
         # -----------------------
         self.construction_period_years = construction_period_years
         self.idc_rate = idc_rate if idc_rate is not None else loan_interest_rate
+        self.construction_period_months = construction_period_months
+        self.construction_loan_fraction = construction_loan_fraction
+        self.construction_upfront_fee_rate = construction_upfront_fee_rate
 
         # -----------------------
         # Depreciation
         # -----------------------
         self.depreciation_method = depreciation_method
         self.depreciation_years = depreciation_years
+        self.depreciation_allocations = depreciation_allocations
+        self.half_year_convention = half_year_convention
+        self.capitalize_construction_financing = (
+            capitalize_construction_financing
+        )
+        self.replacement_depreciation_years = replacement_depreciation_years
+        self.replacement_depreciation_method = replacement_depreciation_method
         
       
         self.electricity_price = electricity_price
@@ -221,6 +285,7 @@ class FinancialModel:
         self.validate_inputs()
         self.loan_schedule = self.build_loan_schedule()
         self.capex_schedule = self.build_capex_schedule()
+        self.debt_schedule = self.calculate_debt_schedule()
         self.revenue_schedule = self.build_revenue_schedule()
         self.opex_schedule = self.build_opex_schedule()
         self.replacement_schedule = self.build_replacement_schedule()
@@ -267,6 +332,17 @@ class FinancialModel:
 
         return [float(costs)] * len(year_list)
 
+    def _annual_series(self, values, label):
+        """Normalize an optional SAM annual schedule to project-life values."""
+        if values is None:
+            return None
+        series = [float(value) for value in values]
+        if len(series) != self.life:
+            raise ValueError(
+                f"{label} must have exactly {self.life} values, got {len(series)}."
+            )
+        return series
+
     def _annual_revenue_series(self):
         if isinstance(self.annual_revenue, (list, tuple, np.ndarray, pd.Series)):
             values = [float(v) for v in self.annual_revenue]
@@ -287,6 +363,16 @@ class FinancialModel:
         ]
 
     def _compute_idc(self):
+
+        if self.construction_period_months is not None:
+            months = float(self.construction_period_months)
+            principal = self.capex * self.construction_loan_fraction
+            # SAM construction financing charges interest on the average
+            # outstanding balance for a linear draw profile.
+            return principal * (
+                self.construction_upfront_fee_rate
+                + self.idc_rate * months / 12.0 * 0.5
+            )
 
         if not self.construction_period_years or self.construction_period_years <= 0:
             return 0.0
@@ -335,14 +421,10 @@ class FinancialModel:
         return 0
     
     def get_exported_energy_for_year(self, year):
-        if self.pv_energy is None:
-            return 0
-
-        exported = self.pv_energy
-
-        exported *= (1 - self.pv_degradation_rate) ** (year - 1)
-
-        return exported
+        return self.energy_schedule.loc[
+            self.energy_schedule["Year"] == year,
+            "Export Energy (kWh)",
+        ].iloc[0]
     
     
     def get_revenue_for_year(self, year):
@@ -375,14 +457,90 @@ class FinancialModel:
             "Total Energy (kWh)"
         ].iloc[0]
         
-        
+    def get_bess_energy_for_year(self, year):
+        return self.energy_schedule.loc[
+            self.energy_schedule["Year"] == year,
+            "BESS Energy (kWh)"
+        ].iloc[0]
+              
     #SCHEDULE
+    def calculate_debt_schedule(self):
 
+        # Total amount financed
+        loan_amount = self.capex_schedule.loc[
+            self.capex_schedule["Year"] == 0,
+            "Debt Draw (VND)"
+        ].iloc[0]
+
+        # Fixed annual payment
+        annual_payment = abs(
+            npf.pmt(
+                self.loan_interest_rate,
+                self.loan_term,
+                loan_amount
+            )
+        )
+
+        balance = loan_amount
+        schedule = []
+
+        for year in range(1, self.life + 1):
+
+            # During loan period
+            if year <= self.loan_term:
+
+                beginning_balance = balance
+
+                # Interest for this year
+                interest = beginning_balance * self.loan_interest_rate
+
+                # Principal repayment
+                principal = annual_payment - interest
+
+                # Prevent over-payment in the last year
+                if principal > beginning_balance:
+                    principal = beginning_balance
+                    annual_payment = principal + interest
+
+                # Remaining balance
+                ending_balance = max(beginning_balance - principal, 0)
+
+                # Remove floating-point noise
+                if ending_balance < 1:
+                    ending_balance = 0
+
+                payment = annual_payment
+
+            # After loan is fully repaid
+            else:
+
+                beginning_balance = 0
+                interest = 0
+                principal = 0
+                payment = 0
+                ending_balance = 0
+
+            schedule.append({
+                "Year": year,
+                "Beginning Balance": beginning_balance,
+                "Interest": interest,
+                "Principal": principal,
+                "Debt Service": payment,
+                "Ending Balance": ending_balance
+            })
+
+            balance = ending_balance
+
+        return schedule
+        
     def build_capex_schedule(self):
 
         rows = []
-        debt = (self.capex * self.loan_fraction) + self.idc
-        equity = self.capex - (self.capex * self.loan_fraction)
+        # SAM sizes permanent debt as a share of total project cost,
+        # including construction financing.
+        total_project_cost = self.capex + self.idc
+        debt = total_project_cost * self.loan_fraction
+        equity = total_project_cost * (1 - self.loan_fraction)
 
         for year in range(self.life + 1):
 
@@ -514,12 +672,9 @@ class FinancialModel:
             # -------------------------
 
             pv_energy = (
-                self.pv_energy
-                *
-                (
-                    (1 - self.pv_degradation_rate)
-                    ** (year - 1)
-                )
+                self.annual_pv_energy[year - 1]
+                if self.annual_pv_energy is not None
+                else self.pv_energy * (1 - self.pv_degradation_rate) ** (year - 1)
             )
 
             # -------------------------
@@ -541,13 +696,21 @@ class FinancialModel:
                 ]
             )
             bess_age = year - latest_replacement
-            bess_energy = self.bess_energy * (
-                (1 - self.battery_degradation_rate) ** bess_age
+            bess_energy = (
+                self.annual_bess_energy[year - 1]
+                if self.annual_bess_energy is not None
+                else self.bess_energy * (1 - self.battery_degradation_rate) ** bess_age
             )
 
             total_energy = (
                 pv_energy
                 + bess_energy
+            )
+
+            export_energy = (
+                self.annual_export_energy[year - 1]
+                if self.annual_export_energy is not None
+                else total_energy
             )
 
             rows.append({
@@ -558,7 +721,9 @@ class FinancialModel:
 
                 "BESS Energy (kWh)": bess_energy,
 
-                "Total Energy (kWh)": total_energy
+                "Total Energy (kWh)": total_energy,
+
+                "Export Energy (kWh)": export_energy
 
             })
 
@@ -583,12 +748,13 @@ class FinancialModel:
             pv_energy = row["PV Energy (kWh)"]
             bess_energy = row["BESS Energy (kWh)"]
             energy = row["Total Energy (kWh)"]
+            export_energy = row["Export Energy (kWh)"]
 
             if override is not None:
                 # An explicit annual_revenue series is a total revenue
                 # override, retaining the legacy contract.
                 revenue = override[year - 1]
-                price = (revenue / energy) if energy else 0
+                price = (revenue / export_energy) if export_energy else 0
                 energy_sales_revenue = revenue
                 capacity_revenue = 0
                 production_incentive = 0
@@ -596,13 +762,13 @@ class FinancialModel:
                 price = self.electricity_price * (
                     (1 + self.price_growth_rate) ** (year - 1)
                 )
-                energy_sales_revenue = energy * price
+                energy_sales_revenue = export_energy * price
                 capacity_revenue = self.capacity_payment * (
                     (1 + self.capacity_payment_growth_rate) ** (year - 1)
                 )
                 production_incentive = 0
                 if year <= self.production_incentive_years:
-                    production_incentive = energy * self.production_incentive_rate * (
+                    production_incentive = export_energy * self.production_incentive_rate * (
                         (1 + self.production_incentive_escalation_rate) ** (year - 1)
                     )
                 revenue = (
@@ -621,6 +787,8 @@ class FinancialModel:
 
                 "Total Energy (kWh)": energy,
 
+                "Export Energy (kWh)": export_energy,
+
                 "Electricity Price (VND/kWh)": price,
 
                 "Energy Sales Revenue (VND)": energy_sales_revenue,
@@ -636,92 +804,165 @@ class FinancialModel:
         return pd.DataFrame(rows)
     
     def build_opex_schedule(self):
+
         rows = []
 
         for year in range(1, self.life + 1):
 
-            growth = (
-                1 + self.opex_growth_rate
-            ) ** (year - 1)
+            growth = (1 + self.opex_growth_rate) ** (year - 1)
 
-            fixed_pv = self.pv_opex * growth
+            pv_energy = self.get_pv_energy_for_year(year)
+            bess_energy = self.get_bess_energy_for_year(year)
 
-            fixed_bess = self.bess_opex * growth
+            # ----------------------------
+            # PV O&M
+            # ----------------------------
 
-            insurance = self.insurance_cost * growth
+            pv_fixed = self.pv_fixed_om
 
-            property_tax = self.property_tax * growth
+            pv_capacity = (
+                self.pv_capacity_kw
+                * self.pv_capacity_om
+            )
 
-            land_lease = self.land_lease_cost * growth
+            pv_generation = (
+                pv_energy / 1000
+                * self.pv_generation_om
+            )
 
-            # Variable O&M scales with total energy throughput (PV + BESS
-            # discharge), not PV alone -- see get_total_energy_for_year().
+            # ----------------------------
+            # Battery O&M
+            # ----------------------------
+
+            battery_fixed = self.battery_fixed_om
+
+            battery_capacity = (
+                self.bess_power_kw
+                * self.battery_capacity_om
+            )
+
+            battery_generation = (
+                bess_energy / 1000
+                * self.battery_generation_om
+            )
+
+            # ----------------------------
+            # Existing costs
+            # ----------------------------
+
+            insurance = self.insurance_cost
+
+            property_tax = self.property_tax
+
+            land_lease = self.land_lease_cost
+
             variable = (
                 self.variable_opex_rate
                 * self.get_total_energy_for_year(year)
             )
 
-            total = (
-
-                fixed_pv
-
-                + fixed_bess
-
-                + insurance
-
-                + property_tax
-
-                + land_lease
-
-                + variable
-
+            grid_purchase = (
+                self.annual_grid_purchase_cost[year - 1]
+                if self.annual_grid_purchase_cost is not None
+                else 0
             )
+
+            total = (
+                pv_fixed
+                + pv_capacity
+                + pv_generation
+                + battery_fixed
+                + battery_capacity
+                + battery_generation
+                + insurance
+                + property_tax
+                + land_lease
+                + variable
+                + grid_purchase
+            ) * growth
 
             rows.append({
 
                 "Year": year,
 
-                "PV O&M (VND)": fixed_pv,
+                "PV Fixed O&M (VND)": pv_fixed * growth,
 
-                "BESS O&M (VND)": fixed_bess,
+                "PV Capacity O&M (VND)": pv_capacity * growth,
 
-                "Insurance (VND)": insurance,
+                "PV Generation O&M (VND)": pv_generation * growth,
 
-                "Property Tax (VND)": property_tax,
+                "Battery Fixed O&M (VND)": battery_fixed * growth,
 
-                "Land Lease (VND)": land_lease,
+                "Battery Capacity O&M (VND)": battery_capacity * growth,
 
-                "Variable O&M (VND)": variable,
+                "Battery Generation O&M (VND)": battery_generation * growth,
+
+                "Insurance (VND)": insurance * growth,
+
+                "Property Tax (VND)": property_tax * growth,
+
+                "Land Lease (VND)": land_lease * growth,
+
+                "Variable O&M (VND)": variable * growth,
+
+                "Grid Purchase (VND)": grid_purchase,
 
                 "Total O&M (VND)": total
 
             })
 
         return pd.DataFrame(rows)
+
     
     def build_depreciation_schedule(self):
-        if self.depreciation_method.upper() == "SL":
+        def rates_for(method, class_life, half_year=False):
+            method = method.upper()
+            if method == "SL":
+                rates = [1 / class_life] * class_life
+                if half_year:
+                    # Half-year convention: half in the first and final year
+                    # with full depreciation in the intervening years.
+                    rates = (
+                        [0.5 / class_life]
+                        + [1 / class_life] * (class_life - 1)
+                        + [0.5 / class_life]
+                    )
+                return rates
+            if method == "MACRS":
+                if class_life not in self.MACRS_TABLES:
+                    raise ValueError(
+                        f"No standard MACRS table for depreciation_years="
+                        f"{class_life}. Supported MACRS class lives: "
+                        f"{sorted(self.MACRS_TABLES)}."
+                    )
+                return self.MACRS_TABLES[class_life]
+            raise ValueError("Unknown depreciation method.")
 
-            base_rate = 1 / self.depreciation_years
-
-            base_rates = [base_rate] * self.depreciation_years
-
-        elif self.depreciation_method.upper() == "MACRS":
-
-            if self.depreciation_years not in self.MACRS_TABLES:
-                raise ValueError(
-                    f"No standard MACRS table for depreciation_years="
-                    f"{self.depreciation_years}. Supported MACRS class "
-                    f"lives: {sorted(self.MACRS_TABLES)}."
+        if self.depreciation_allocations:
+            base_rates = [0.0] * (self.life + 1)
+            for class_life, allocation in self.depreciation_allocations:
+                component_rates = rates_for(
+                    "SL", int(class_life), self.half_year_convention
                 )
-
-            base_rates = self.MACRS_TABLES[self.depreciation_years]
-
+                for index, rate in enumerate(component_rates):
+                    if index < len(base_rates):
+                        base_rates[index] += float(allocation) * rate
         else:
-
-            raise ValueError(
-                "Unknown depreciation method."
+            base_rates = rates_for(
+                self.depreciation_method,
+                self.depreciation_years,
+                self.half_year_convention,
             )
+
+        replacement_rates = (
+            rates_for(
+                self.replacement_depreciation_method,
+                self.replacement_depreciation_years,
+                self.half_year_convention,
+            )
+            if self.replacement_depreciation_method
+            else base_rates
+        )
 
         gross_initial_asset = (
             self.pv_capex
@@ -729,6 +970,8 @@ class FinancialModel:
             + self.inverter_capex
             + self.other_capex
         )
+        if self.capitalize_construction_financing:
+            gross_initial_asset += self.idc
 
         # Tax credits reduce depreciable basis but are not themselves an
         # operating expense.  With the default 50% reduction this follows the
@@ -789,8 +1032,8 @@ class FinancialModel:
 
                 age = int(year - install_year)
 
-                if 0 <= age < len(base_rates):
-                    battery_dep += replacement_cost * base_rates[age]
+                if 0 <= age < len(replacement_rates):
+                    battery_dep += replacement_cost * replacement_rates[age]
 
             # --------------------------
             # Inverter replacement depreciation
@@ -809,8 +1052,8 @@ class FinancialModel:
 
                 age = int(year - install_year)
 
-                if 0 <= age < len(base_rates):
-                    inverter_replacement_dep += replacement_cost * base_rates[age]
+                if 0 <= age < len(replacement_rates):
+                    inverter_replacement_dep += replacement_cost * replacement_rates[age]
 
             total_dep = (
                 base_dep
@@ -908,7 +1151,7 @@ class FinancialModel:
     def build_loan_schedule(self):
         if self.loan_fraction == 0:
             return {}
-        loan_amount = (self.capex * self.loan_fraction) + self.idc
+        loan_amount = (self.capex + self.idc) * self.loan_fraction
 
         annual_payment = abs(
             npf.pmt(
@@ -1047,9 +1290,9 @@ class FinancialModel:
             discount = (1 + self.real_discount_rate) ** year
 
             opex_growth = (1 + self.opex_growth_rate) ** (year - 1)
-
+            opex = self.get_opex_for_year(year)
             total += (
-                self.pv_opex * opex_growth
+                opex * opex_growth
                 /
                 discount
             )
@@ -1103,8 +1346,10 @@ class FinancialModel:
 
             opex_growth = (1 + self.opex_growth_rate) ** (year - 1)
 
+            bess = self.get_bess_energy_for_year(year)
+            
             total += (
-                self.bess_opex * opex_growth
+                bess * opex_growth
                 /
                 discount
             )
@@ -1193,9 +1438,13 @@ class FinancialModel:
         )
 
         if self.annual_revenue is None:
-            assert (self.pv_energy or 0) > 0 or (self.bess_energy or 0) > 0, (
+            assert (
+                (self.pv_energy or 0) > 0
+                or (self.bess_energy or 0) > 0
+                or self.annual_export_energy is not None
+            ), (
                 "electricity_price was provided but there is no PV or BESS "
-                "energy (pv_result/bess_result) to apply it to."
+                "energy (pv_result/bess_result or annual_export_energy) to apply it to."
             )
         
         
@@ -1230,7 +1479,6 @@ class FinancialModel:
 
 # Cash Flow
     def calculate_cash_flow(self):
-        """Build a SAM-style, after-tax annual project and equity cash flow."""
         rows = []
         tax_loss_balance = 0.0
         itc_credit_balance = 0.0
@@ -1238,9 +1486,11 @@ class FinancialModel:
         debt = self.capex_schedule.loc[
             self.capex_schedule["Year"] == 0, "Debt Draw (VND)"
         ].iloc[0]
+        
         equity = self.capex_schedule.loc[
             self.capex_schedule["Year"] == 0, "Equity Draw (VND)"
         ].iloc[0]
+        
         cumulative = -equity
 
         rows.append({
@@ -1262,19 +1512,29 @@ class FinancialModel:
         })
 
         for year in range(1, self.life + 1):
-            energy = self.get_total_energy_for_year(year)
+            energy = self.get_exported_energy_for_year(year)
             revenue = self.get_revenue_for_year(year)
             opex = self.get_opex_for_year(year)
             ebitda = revenue - opex
             depreciation = self.get_depreciation(year)
             ebit = ebitda - depreciation
 
-            loan = self.loan_schedule.get(
-                year, {"interest": 0, "principal": 0, "balance": 0}
-            )
-            interest = loan["interest"]
-            principal = loan["principal"]
-            loan_balance = loan["balance"]
+            if year <= len(self.debt_schedule):
+                debt = self.debt_schedule[year - 1]
+
+                interest = debt["Interest"]
+                principal = debt["Principal"]
+                loan_balance = debt["Ending Balance"]
+                debt_service = debt["Debt Service"]
+                beginning_loan_balance = debt["Beginning Balance"]
+
+            else:
+                interest = 0
+                principal = 0
+                loan_balance = 0
+                debt_service = 0
+                beginning_loan_balance = 0
+                
             replacement = self.get_replacement_cost(year)
 
             book_value = self.depreciation_schedule.loc[
@@ -1305,6 +1565,9 @@ class FinancialModel:
             income_tax = pre_credit_tax - itc_applied
 
             net_income = ebit - interest + terminal_gain_or_loss - income_tax
+            # Unlevered operating cash flow must not include interest.  The
+            # prior version added depreciation back to net income and then
+            # subtracted interest a second time in equity cash flow.
             operating_cf = ebitda - income_tax
             project_cf = operating_cf - replacement + salvage
             equity_cf = project_cf - interest - principal
@@ -1312,8 +1575,10 @@ class FinancialModel:
             discount = 1 / (1 + self.discount_rate) ** year
             discounted_cf = equity_cf * discount
             cumulative += discounted_cf
-            cfads = ebitda - income_tax - replacement
-            debt_service = interest + principal
+            # SAM's mortgage-style debt-sizing CAFDS is EBITDA before tax and
+            # replacement-reserve funding.  Detailed maintenance CAPEX still
+            # remains in the equity cash flow above.
+            cfads = ebitda
             dscr = cfads / debt_service if debt_service > 0 else None
 
             rows.append({
@@ -1321,7 +1586,8 @@ class FinancialModel:
                 "OPEX (VND)": opex, "EBITDA (VND)": ebitda,
                 "Depreciation (VND)": depreciation, "EBIT (VND)": ebit,
                 "Interest (VND)": interest, "Principal (VND)": principal,
-                "Loan Balance (VND)": loan_balance,
+                "Beginning Loan Balance (VND)": beginning_loan_balance,
+                "Ending Loan Balance (VND)": loan_balance,
                 "Taxable Income (VND)": taxable_income,
                 "Tax Loss Used (VND)": tax_loss_used,
                 "Tax Loss Carryforward (VND)": tax_loss_balance,
@@ -1537,9 +1803,11 @@ class FinancialModel:
 
             "Investment Tax Credit (VND)": self.investment_tax_credit,
 
-            "Debt Amount (VND)": (self.capex * self.loan_fraction) + self.idc,
+            "Debt Amount (VND)": (self.capex + self.idc) * self.loan_fraction,
 
-            "Equity Investment (VND)": self.capex * (1 - self.loan_fraction),
+            "Equity Investment (VND)": (
+                (self.capex + self.idc) * (1 - self.loan_fraction)
+            ),
 
             "Debt Fraction (%)": self.loan_fraction * 100,
 
@@ -1766,8 +2034,13 @@ class FinancialModel:
             # ------------------------
             # OPEX
             # ------------------------
-            "Year 1 PV OPEX (VND)": self.pv_opex,
-            "Year 1 BESS OPEX (VND)": self.bess_opex,
+            "Year 1 PV OPEX (VND)": (
+                self.pv_fixed_om + self.pv_capacity_kw * self.pv_capacity_om
+            ),
+            "Year 1 BESS OPEX (VND)": (
+                self.battery_fixed_om
+                + self.bess_power_kw * self.battery_capacity_om
+            ),
             "Year 1 Total OPEX (VND)": self.get_opex_for_year(1),
 
             # ------------------------
@@ -1784,8 +2057,8 @@ class FinancialModel:
             # ------------------------
             # Financing
             # ------------------------
-            "Debt (VND)": (self.capex * self.loan_fraction) + self.idc,
-            "Equity (VND)": self.capex * (1 - self.loan_fraction),
+            "Debt (VND)": (self.capex + self.idc) * self.loan_fraction,
+            "Equity (VND)": (self.capex + self.idc) * (1 - self.loan_fraction),
             "IDC Capitalized (VND)": self.idc,
             "Investment Tax Credit (VND)": self.investment_tax_credit,
 
